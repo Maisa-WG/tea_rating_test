@@ -18,7 +18,7 @@ from docx import Document
 
 deepseek_key = os.environ.get("DEEPSEEK_KEY")
 aliyun_key = os.environ.get("ALIYUN_KEY")
-if not (deepseek_key AND aliyun_key):
+if not deepseek_key:
     raise RuntimeError("OPENAI_API_KEY is not set")
 
 # ==========================================
@@ -493,3 +493,4 @@ with tab3:
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
 
             st.success("Prompt 已保存！"); time.sleep(1); st.rerun()
+
