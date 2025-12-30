@@ -16,11 +16,6 @@ from dashscope import TextEmbedding
 from openai import OpenAI
 from docx import Document
 
-deepseek_key = os.environ.get("DEEPSEEK_KEY")
-aliyun_key = os.environ.get("ALIYUN_KEY")
-if not deepseek_key:
-    raise RuntimeError("OPENAI_API_KEY is not set")
-
 # ==========================================
 # 0. 基础配置与持久化路径
 # ==========================================
@@ -131,16 +126,32 @@ class AliyunEmbedder:
 
 # 默认 Prompt
 DEFAULT_PROMPT_CONFIG = {
-    "system_template": """你是一名资深的茶饮产品研发与感官分析专家，精通《中国茶感官品鉴手册》。
+    "system_template": """你是一名资深的茶饮产品研发与感官分析专家，精通《中国茶感官品鉴手册》等已上传的权威文献及手册。
 请基于给定的产品描述、参考资料和相似历史判例，严格按照"罗马测评法2.0"进行专业评分。
+请以“推理—行动—观察”的方式完成任务。
+【工作协议（ReAct）】
+你在回答时，需在内部遵循如下循环（无需对用户展示步骤标签）：
+1.Reasoning（推理）
+- 判断产品描述中最关键的感官风险点（尤其是苦涩度转化）
+- 明确哪些六因子需要被重点评估
+2.Action（行动）
+- 必须参考提供的【手册资料】与【历史判例】RAG
+- 如果判例与当前产品相似，应提取其对应因子得分作为校准依据
+- 不得完全忽略任何一个信息源
+3.Observation（吸收信息）
+- 综合参考信息，调整原始判断
+- 若参考信息不足，需明确降低置信度并反映在评分中
+4.Final Decision
+- 严格基于六因子模型输出评分与建议
+- 禁止跳过推理直接给分
 
 【评分模型】
 三段六因子：前香(优雅/辨识)、中味(协调/饱和)、后韵(持久/苦涩)。
 
 【思维链要求】
-1. 先判断苦涩度的转化（是化开回甘还是锁喉焦苦）。
+1. 先判断注意事项，如苦涩度的转化是化开回甘还是锁喉焦苦。
 2. 结合香气和口感给予客观分数（0-9分）。
-3. 针对每个因子给出具体的【鉴赏建议】（高分）或【改进建议】（低分）。
+3. 针对每个因子给出具体的依据原因、【鉴赏建议】（高分）或【改进建议】（低分）。
 
 {model_description}""",
     
@@ -260,27 +271,107 @@ if 'loaded' not in st.session_state:
         st.session_state.prompt_config = DEFAULT_PROMPT_CONFIG.copy()
     
     st.session_state.loaded = True
-
 with st.sidebar:
+    st.header("⚙️ 系统配置")
+    st.markdown("**🔐 API 配置（默认使用环境变量）**")
+
+    # 先从环境变量 / secrets 读
+    env_aliyun_key = os.getenv("ALIYUN_API_KEY") or st.secrets.get("ALIYUN_API_KEY", "")
+    env_deepseek_key = os.getenv("DEEPSEEK_API_KEY") or st.secrets.get("DEEPSEEK_API_KEY", "")
+
+    # UI 仍然保留，但默认值是环境变量
+    aliyun_key = st.text_input(
+        "阿里云 Key（可覆盖）",
+        value=env_aliyun_key,
+        type="password"
+    )
+
+    deepseek_key = st.text_input(
+        "DeepSeek Key（可覆盖）",
+        value=env_deepseek_key,
+        type="password"
+    )
+
+    if not aliyun_key or not deepseek_key:
+        st.warning("⚠️ 当前未配置 API Key，系统将无法运行")
+        st.stop()
 
     st.markdown("---")
     st.markdown("**🧠 模型设定**")
-    
-    # 自动获取微调后的模型 ID
-    ft_status = DataManager.load_ft_status()
-    default_model = "deepseek-chat" # 默认使用通用模型
-    if ft_status and ft_status.get('status') == 'succeeded' and 'fine_tuned_model' in ft_status:
-        default_model = ft_status['fine_tuned_model']
-        st.toast(f"已自动加载微调模型: {default_model}", icon="🎉")
-        
-    model_id = st.text_input("Model ID", value=default_model)
-    
-    embedder = None
-    client = None
-    if aliyun_key and deepseek_key:
-        embedder = AliyunEmbedder(aliyun_key)
-        client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
 
+    ft_status = DataManager.load_ft_status()
+    default_model = "deepseek-chat"
+    if ft_status and ft_status.get("status") == "succeeded":
+        default_model = ft_status.get("fine_tuned_model", default_model)
+        st.toast(f"已加载微调模型: {default_model}", icon="🎉")
+
+    model_id = st.text_input("Model ID", value=default_model)
+
+    embedder = AliyunEmbedder(aliyun_key)
+    client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
+    
+    st.markdown("---")
+    st.markdown("**📚 RAG 知识库管理**")
+    
+    # 显示当前 RAG 状态
+    st.caption(f"知识库片段: {len(st.session_state.kb[1])} 条")
+    st.caption(f"判例库案例: {len(st.session_state.cases[1])} 条")
+    
+    if st.button("📤 导出 RAG 数据"):
+        # 创建压缩包
+        import zipfile, shutil
+        
+        # 创建临时目录
+        temp_dir = Path("./temp_export")
+        temp_dir.mkdir(exist_ok=True)
+        
+        # 复制所有 RAG 文件
+        for key, path in PATHS.items():
+            if path.exists():
+                shutil.copy2(path, temp_dir / path.name)
+        
+        # 创建 zip 文件
+        zip_path = Path("./rag_export.zip")
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            for file in temp_dir.iterdir():
+                zipf.write(file, file.name)
+        
+        # 提供下载
+        with open(zip_path, 'rb') as f:
+            st.download_button(
+                label="⬇️ 下载 RAG 数据包",
+                data=f,
+                file_name="tea_rag_data.zip",
+                mime="application/zip"
+            )
+        
+        # 清理临时文件
+        shutil.rmtree(temp_dir)
+        zip_path.unlink()
+    
+    if st.button("📥 导入 RAG 数据"):
+        uploaded_zip = st.file_uploader("上传 RAG 数据包", type=['zip'])
+        if uploaded_zip:
+            with st.spinner("导入中..."):
+                # 解压到临时目录
+                import tempfile, zipfile
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zip_path = Path(tmpdir) / "uploaded.zip"
+                    with open(zip_path, 'wb') as f:
+                        f.write(uploaded_zip.getvalue())
+                    
+                    # 解压
+                    with zipfile.ZipFile(zip_path, 'r') as zipf:
+                        zipf.extractall(DATA_DIR)
+                    
+                    # 重新加载数据
+                    kb_idx, kb_data = DataManager.load(PATHS['kb_index'], PATHS['kb_chunks'])
+                    case_idx, case_data = DataManager.load(PATHS['case_index'], PATHS['case_data'], is_json=True)
+                    st.session_state.kb = (kb_idx, kb_data)
+                    st.session_state.cases = (case_idx, case_data)
+                    
+                    st.success("✅ RAG 数据导入成功！")
+                    st.rerun()
 st.markdown('<div class="main-title">🍵 茶饮六因子 AI 评分器 Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="slogan">“一片叶子落入水中，改变了水的味道...”</div>', unsafe_allow_html=True)
 
@@ -493,4 +584,5 @@ with tab3:
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
 
             st.success("Prompt 已保存！"); time.sleep(1); st.rerun()
+
 
