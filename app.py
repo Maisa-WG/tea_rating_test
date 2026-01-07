@@ -272,7 +272,7 @@ Step 5：列出帮助提升茶饮评分的建议（suggestion）。
 }}"""
 }
 
-# 内置判例
+# 内置判例，AI生成，可能后续需要根据实际情况精细评分。
 SEED_CASES = [
     {
         "text": "干茶有清淡的花香，闻着干净舒服；入口柔和顺滑，整体偏淡，回甘不明显，几乎不苦不涩。",
@@ -535,6 +535,7 @@ with st.sidebar:
     # 从环境变量 / secrets 读取
     aliyun_key = os.getenv("ALIYUN_API_KEY") or st.secrets.get("ALIYUN_API_KEY", "")
     deepseek_key = os.getenv("DEEPSEEK_API_KEY") or st.secrets.get("DEEPSEEK_API_KEY", "")
+    
 
     if not aliyun_key or not deepseek_key:
         st.warning("⚠️ 当前未配置 API Key，系统将无法运行")
@@ -560,6 +561,8 @@ with st.sidebar:
 
     embedder = AliyunEmbedder(aliyun_key)
     client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
+    bootstrap_seed_cases_if_empty(embedder)
+
     
     st.markdown("---")
     st.markdown("**📚 RAG 知识库管理**")
