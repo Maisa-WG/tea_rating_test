@@ -296,7 +296,7 @@ def run_scoring(text, kb_res, case_res, prompt_cfg, embedder, client, model_id):
                 k_sc = sc.get('苦涩度',{}).get('score', 0) if isinstance(sc,dict) and '苦涩度' in sc else 0
                 case_txt += f"\n参考案例: {c['text'][:30]}... -> 优雅性:{u_sc} 苦涩度:{k_sc}"
 
-    sys_p = prompt_cfg.get('system_template', DEFAULT_PROMPT_CONFIG['system_template']))
+    sys_p = prompt_cfg.get('system_template', DEFAULT_PROMPT_CONFIG['system_template']).replace("{model_description}", get_model_desc())
     user_p = prompt_cfg.get('user_template', DEFAULT_PROMPT_CONFIG['user_template']).format(product_desc=text, context_text=ctx_txt, case_text=case_txt)
 
     try:
@@ -670,6 +670,7 @@ with tab3:
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
 
             st.success("Prompt 已保存！"); time.sleep(1); st.rerun()
+
 
 
 
