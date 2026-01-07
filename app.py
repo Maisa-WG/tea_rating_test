@@ -253,10 +253,10 @@ Step 5：列出帮助提升茶饮评分的建议（suggestion）。
     "user_template": """【待评分产品】
 {product_desc}
 
-【参考标准（手册）】
+【参考标准（知识库）】
 {context_text}
 
-【历史判例参考（Few-Shot）】
+【历史判例参考（案例库）】
 {case_text}
 
 请严格输出以下JSON格式（不含Markdown）：
@@ -277,9 +277,6 @@ Step 5：列出帮助提升茶饮评分的建议（suggestion）。
 # ==========================================
 # 2. 逻辑函数
 # ==========================================
-
-# 给prompt的占位说明，让 prompt 更“可读、可扩展”
-def get_model_desc(): return "优雅性/辨识度/协调性/饱和度/持久性/苦涩度，关注各阶段感官表现。"
 
 # 最核心***的评分函数；流程：用户文本 → 向量检索 → RAG + 判例拼 Prompt → 调用模型 → 解析 JSON
 def run_scoring(text, kb_res, case_res, prompt_cfg, embedder, client, model_id): # 输入：茶评、知识库、案例库、prompt配置等
@@ -304,7 +301,7 @@ def run_scoring(text, kb_res, case_res, prompt_cfg, embedder, client, model_id):
                 case_txt += f"\n参考案例: {c['text'][:30]}... -> 优雅性:{u_sc} 苦涩度:{k_sc}"
 
     # 系统prompt无改动，用户prompt随着茶评、知识库内容、判例库内容相应变化
-    sys_p = prompt_cfg.get('system_template', DEFAULT_PROMPT_CONFIG['system_template']).replace("{model_description}", get_model_desc())
+    sys_p = prompt_cfg.get('system_template', DEFAULT_PROMPT_CONFIG['system_template'])
     user_p = prompt_cfg.get('user_template', DEFAULT_PROMPT_CONFIG['user_template']).format(product_desc=text, context_text=ctx_txt, case_text=case_txt)
 
     try:
@@ -504,23 +501,8 @@ with tab1:
                             data = s_dict[fname]
                             with cols[i%3]:
                                 st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{fname}</span><span>{data.get('score')}/9</span></div><div style="margin:5px 0; font-size:0.9em;">{data.get('comment')}</div><div class="advice-tag">💡 {data.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
-                    '''
-                    with st.expander("📥 认可此评分？(点击保存)"): # 缺少一个对分数进行调整的空间
-                        if st.button("✅ 确认保存 (自动加入训练集)"):
-                            new_case = {"text": user_input, "scores": s_dict, "tags": "交互生成"}
-                            st.session_state.cases[1].append(new_case)
-                            vec = embedder.encode([user_input])
-                            st.session_state.cases[0].add(vec)
-                            DataManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS['case_index'], PATHS['case_data'], is_json=True)
-                            
-                            sys_p = st.session_state.prompt_config['system_template'].replace("{model_description}", get_model_desc())
-                            DataManager.append_to_finetune(user_input, s_dict, sys_p, st.session_state.prompt_config['user_template'])
-                            
-                            st.success("已存档！数据已加入 RAG 库和微调队列。")
-                            time.sleep(1)
-                            st.rerun()
-                    '''
-                    with st.expander("📥 认可此评分？可调整后保存"):
+
+                    with st.expander("📥 认可此评分？可保存或修改评分结果！"):
                         # ---- 1) 提供可编辑的“人工校准区” ----
                         factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
                         edited_scores = {}
@@ -589,10 +571,10 @@ with tab1:
                             )
 
                             # 训练集也使用校准后的 scores（建议把 master_comment 也写入训练集）
-                            sys_p = st.session_state.prompt_config['system_template'].replace("{model_description}", get_model_desc())
+                            sys_p = st.session_state.prompt_config['system_template']
 
-                            # 这里沿用你的 append_to_finetune，但它目前 master_comment 固定“（人工校准）”
-                            # 如果你希望把 edited_master 写入训练集，建议升级 append_to_finetune（见下方增强版）
+                            # 这里沿用 append_to_finetune，但它目前 master_comment 固定“（人工校准）”
+                            # 如果希望把 edited_master 写入训练集，建议升级 append_to_finetune
                             DataManager.append_to_finetune(
                                 user_input,
                                 edited_scores,
@@ -614,7 +596,7 @@ with tab1:
                             st.session_state.cases[0].add(vec)
                             DataManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS['case_index'], PATHS['case_data'], is_json=True)
 
-                            sys_p = st.session_state.prompt_config['system_template'].replace("{model_description}", get_model_desc())
+                            sys_p = st.session_state.prompt_config['system_template']
                             DataManager.append_to_finetune(user_input, s_dict, sys_p, st.session_state.prompt_config['user_template'])
 
                             st.success("已按模型原评分存档！")
@@ -755,7 +737,7 @@ with tab3:
                         st.session_state.cases[0].add(vec)
                         DataManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS['case_index'], PATHS['case_data'], is_json=True)
                         
-                        sys_p = st.session_state.prompt_config['system_template'].replace("{model_description}", get_model_desc())
+                        sys_p = st.session_state.prompt_config['system_template']
                         DataManager.append_to_finetune(f_txt, input_scores, sys_p, st.session_state.prompt_config['user_template'])
                         
                         st.success("已保存！")
@@ -769,16 +751,16 @@ with tab3:
 
     # Column 3: Prompt
     with c3:
-        st.subheader("📝 Prompt 模板")
+        st.subheader("📝 Prompt 提示词模板")
         current_sys = st.session_state.prompt_config.get('system_template', '')
         current_user = st.session_state.prompt_config.get('user_template', '')
         
-        if "{case_text}" not in current_user: st.warning("User Template 缺少 {case_text}")
+        if "{case_text}" not in current_user: st.warning("用户输入模板 缺少 {case_text}")
         
-        sys_t = st.text_area("System Template", current_sys, height=200)
-        user_t = st.text_area("User Template", current_user, height=200)
+        sys_t = st.text_area("系统提示词模板", current_sys, height=200)
+        user_t = st.text_area("用户输入提示词模板", current_user, height=200, disabled=True)
         
-        if st.button("💾 保存 Prompt"):
+        if st.button("💾 保存 Prompt 提示词"):
             new_cfg = {"system_template": sys_t, "user_template": user_t}
             st.session_state.prompt_config = new_cfg
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
