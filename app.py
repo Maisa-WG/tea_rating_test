@@ -1497,8 +1497,23 @@ tab1, tab2, tab3 = st.tabs(["💡 交互评分", "🚀 批量评分", "🛠️ �
 with tab1:
     st.info("AI 将参考知识库与判例库进行评分。确认结果后将自动更新 RAG 库。")
     
-    r_num = st.number_input("参考知识库条目数量", min_value=1, max_value=20, value=3, step=1)
-    c_num = st.number_input("参考判例库条目数量", min_value=1, max_value=20, value=2, step=1)
+    col1, col2, col3, col4 = st.columns([1, 3, 3, 1])
+    with col2:
+        r_num = st.number_input(
+            "参考知识库条目数量",
+            min_value=1,
+            max_value=20,
+            value=3,
+            step=1
+        )
+    with col3:
+        c_num = st.number_input(
+            "参考判例库条目数量",
+            min_value=1,
+            max_value=20,
+            value=2,
+            step=1
+        )
 
     # 使用会话状态存储用户输入，避免刷新后丢失
     if 'current_user_input' not in st.session_state:
@@ -1741,8 +1756,23 @@ with tab1:
     # --- Tab 2: 批量评分 ---
     with tab2:
         up_file = st.file_uploader("上传文件 (支持 .txt / .docx)", type=['txt','docx'])
-        r_num = st.number_input("参考知识库条目数量", min_value=1, max_value=20, value=3, step=1)
-        c_num = st.number_input("参考判例库条目数量", min_value=1, max_value=20, value=2, step=1)
+        col1, col2, col3, col4 = st.columns([1, 3, 3, 1])
+        with col2:
+            r_num = st.number_input(
+                "参考知识库条目数量",
+                min_value=1,
+                max_value=20,
+                value=3,
+                step=1
+            )
+        with col3:
+            c_num = st.number_input(
+                "参考判例库条目数量",
+                min_value=1,
+                max_value=20,
+                value=2,
+                step=1
+            )
         if up_file and st.button("开始批量处理"):
             if not client: st.error("请配置 Key")
             else:
