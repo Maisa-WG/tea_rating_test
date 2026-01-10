@@ -1504,15 +1504,18 @@ with tab1:
             min_value=1,
             max_value=20,
             value=3,
-            step=1
+            step=1,
+            key="r_num_input"
         )
+    
     with col3:
         c_num = st.number_input(
             "参考判例库条目数量",
             min_value=1,
             max_value=20,
             value=2,
-            step=1
+            step=1,
+            key="c_num_input"
         )
 
     # 使用会话状态存储用户输入，避免刷新后丢失
@@ -1763,15 +1766,18 @@ with tab1:
                 min_value=1,
                 max_value=20,
                 value=3,
-                step=1
+                step=1,
+                key="r_num_input"
             )
+        
         with col3:
             c_num = st.number_input(
                 "参考判例库条目数量",
                 min_value=1,
                 max_value=20,
                 value=2,
-                step=1
+                step=1,
+                key="c_num_input"
             )
         if up_file and st.button("开始批量处理"):
             if not client: st.error("请配置 Key")
@@ -2141,6 +2147,7 @@ with tab1:
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
 
             st.success("Prompt 已保存！"); time.sleep(1); st.rerun()
+
 
 
 
