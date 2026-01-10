@@ -1199,7 +1199,7 @@ SEED_CASES = [
 # ==========================================
 
 # 最核心的评分函数；流程：用户文本 → 向量检索 → RAG + 判例拼 Prompt → 调用模型 → 解析 JSON
-def run_scoring(text, kb_res, case_res, prompt_cfg, embedder, client, model_id, k_num = 3, c_num = 2): # 输入：茶评、知识库、案例库、prompt配置等
+def run_scoring(text, kb_res, case_res, prompt_cfg, embedder, client, model_id, k_num, c_num): # 输入：茶评、知识库、案例库、prompt配置等
     vec = embedder.encode([text]) # 文本通过阿里云embedder转为向量
     ctx_txt, hits = "（无手册资料）", [] # RAG初始
     if kb_res[0].ntotal > 0: # 如果RAG非空，找到最相似的3个片段
@@ -2141,6 +2141,7 @@ with tab1:
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
 
             st.success("Prompt 已保存！"); time.sleep(1); st.rerun()
+
 
 
 
