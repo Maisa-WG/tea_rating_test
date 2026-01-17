@@ -392,7 +392,8 @@ with st.sidebar:
     # 展示当前RAG与判例容量
     st.markdown("---")
     st.markdown(f"知识库: {len(st.session_state.kb[1])} | 判例库: {len(st.session_state.cases[1])}")
-    st.caption(f"快速上传仅支持.zip文件格式。\n少量文件上传请至\"模型调优\"板块。")
+    st.caption("快速上传仅支持.zip文件格式。")
+    st.caption("少量文件上传请至\"模型调优\"板块。")
     # 
     if st.button("📤 导出数据"):
         import zipfile, shutil
