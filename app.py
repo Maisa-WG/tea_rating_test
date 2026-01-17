@@ -7,39 +7,28 @@ import time
 import pickle
 from pathlib import Path
 from io import BytesIO
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Optional
 from PyPDF2 import PdfReader
+from http import HTTPStatus
+import dashscope
+from dashscope import TextEmbedding
+from openai import OpenAI
 from docx import Document
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
-from openai import OpenAI
 
 # ==========================================
-# 0. 基础配置与持久化路径
+# [SECTION 0] 基础配置与路径定义
 # ==========================================
+
 st.set_page_config(
-    page_title="茶饮六因子AI评分器 (Local Pro)",
+    page_title="茶饮六因子AI评分器 Pro",
     page_icon="🍵",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 定义记忆存储目录
-DATA_DIR = Path("./tea_data")
-DATA_DIR.mkdir(exist_ok=True) 
-
-# 定义文件路径
-PATHS = {
-    "kb_index": DATA_DIR / "kb.index",
-    "kb_chunks": DATA_DIR / "kb_chunks.pkl",
-    "case_index": DATA_DIR / "cases.index",
-    "case_data": DATA_DIR / "cases.json",
-    # 注意：这里改为 LLaMA-Factory 兼容的训练数据路径
-    "training_data": DATA_DIR / "tea_finetune.json", 
-    "prompt": DATA_DIR / "prompts.json"
-}
-
-# 样式
+# 样式定义
 st.markdown("""
     <style>
     .main-title {font-size: 2.5em; font-weight: bold; text-align: center; color: #2E7D32; margin-bottom: 0.5em;}
@@ -48,23 +37,97 @@ st.markdown("""
     .score-header {display:flex; justify-content:space-between; font-weight:bold; color:#2E7D32;}
     .advice-tag {font-size: 0.85em; padding: 2px 6px; border-radius: 4px; margin-top: 5px; background-color: #fff; border: 1px dashed #4CAF50; color: #388E3C; display: inline-block;}
     .master-comment {background-color: #FFFDE7; border: 1px solid #FFF9C4; padding: 15px; border-radius: 8px; font-family: "KaiTi", serif; font-size: 1.1em; color: #5D4037; margin-bottom: 20px; line-height: 1.6;}
+    .ft-card {border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f8f9fa; margin-top: 10px;}
     </style>
 """, unsafe_allow_html=True)
 
+class PathConfig:
+    """路径管理类"""
+    # 外部资源文件（位于同级目录）
+    SRC_SYS_PROMPT = Path("sys_p.txt")
+    SRC_SEED_CASES = Path("seed_case.json")
+
+    # 运行时数据目录
+    DATA_DIR = Path("./tea_data")
+    
+    def __init__(self):
+        self.DATA_DIR.mkdir(exist_ok=True)
+        # 向量库与持久化数据
+        self.kb_index = self.DATA_DIR / "kb.index"
+        self.kb_chunks = self.DATA_DIR / "kb_chunks.pkl"
+        self.case_index = self.DATA_DIR / "cases.index"
+        self.case_data = self.DATA_DIR / "cases.json"
+        
+        # 微调与Prompt配置
+        self.training_file = self.DATA_DIR / "deepseek_finetune.jsonl"
+        self.ft_status = self.DATA_DIR / "ft_status.json"
+        self.prompt_config_file = self.DATA_DIR / "prompts.json"
+
+PATHS = PathConfig()
+
+# 默认的用户Prompt模板（System Prompt将从文件读取）
+DEFAULT_USER_TEMPLATE = """【待评分产品】
+{product_desc}
+
+【参考标准（知识库）】
+{context_text}
+
+【历史判例参考（案例库）】
+{case_text}
+
+请严格输出以下JSON格式（不含Markdown）：
+{{
+  "master_comment": "约100字的宗师级总评，富含文化意蕴...",
+  "scores": {{
+    "优雅性": {{"score": 0-9, "comment": "...", "suggestion": "..."}},
+    "辨识度": {{"score": 0-9, "comment": "...", "suggestion": "..."}},
+    "协调性": {{"score": 0-9, "comment": "...", "suggestion": "..."}},
+    "饱和度": {{"score": 0-9, "comment": "...", "suggestion": "..."}},
+    "持久性": {{"score": 0-9, "comment": "...", "suggestion": "..."}},
+    "苦涩度": {{"score": 0-9, "comment": "...", "suggestion": "..."}}
+  }}
+}}"""
+
 # ==========================================
-# 1. 核心数据管理
+# [SECTION 1] 资源与数据管理
 # ==========================================
 
-class DataManager:
+class ResourceManager:
+    """负责外部文件加载、数据持久化及格式转换"""
+
     @staticmethod
-    def save(index, data, idx_path, data_path, is_json=False):
+    def load_external_text(path: Path, fallback: str = "") -> str:
+        """读取外部文本文件 (如 sys_p.txt)"""
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            except Exception as e:
+                st.error(f"加载文件 {path} 失败: {e}")
+        return fallback
+
+    @staticmethod
+    def load_external_json(path: Path, fallback: Any = None) -> Any:
+        """读取外部JSON文件 (如 seed_case.json)"""
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                st.error(f"加载文件 {path} 失败: {e}")
+        return fallback if fallback is not None else []
+
+    @staticmethod
+    def save(index: Any, data: Any, idx_path: Path, data_path: Path, is_json: bool = False):
+        """保存 FAISS 索引和数据文件"""
         if index: faiss.write_index(index, str(idx_path))
         with open(data_path, "w" if is_json else "wb") as f:
             if is_json: json.dump(data, f, ensure_ascii=False, indent=2)
             else: pickle.dump(data, f)
     
     @staticmethod
-    def load(idx_path, data_path, is_json=False):
+    def load(idx_path: Path, data_path: Path, is_json: bool = False) -> Tuple[Any, List]:
+        """加载 FAISS 索引和数据文件"""
         if idx_path.exists() and data_path.exists():
             try:
                 index = faiss.read_index(str(idx_path))
@@ -72,167 +135,150 @@ class DataManager:
                     data = json.load(f) if is_json else pickle.load(f)
                 return index, data
             except: pass
-        # 默认返回 384 维索引 (适配 all-MiniLM-L6-v2)
-        # 如果你之前运行过旧代码，建议删除 ./tea_data 下的 .index 文件重新生成，否则维度不匹配会报错
-        return faiss.IndexFlatL2(384), [] 
-    
-    @staticmethod
-    def append_to_finetune_dataset(user_input, scores, system_prompt, master_comment):
-        """
-        核心微调逻辑：将校准后的数据保存为 LLaMA-Factory 兼容的 Alpaca 格式 (JSON List)
-        """
-        try:
-            # 1. 构造期望的模型输出 (JSON)
-            target_output = json.dumps({
-                "master_comment": master_comment,
-                "scores": scores
-            }, ensure_ascii=False)
-            
-            # 2. 构造一条训练数据
-            new_entry = {
-                "instruction": system_prompt,
-                "input": user_input,
-                "output": target_output
-            }
-            
-            # 3. 读取现有文件或创建新列表
-            current_data = []
-            if PATHS['training_data'].exists():
-                try:
-                    with open(PATHS['training_data'], "r", encoding="utf-8") as f:
-                        current_data = json.load(f)
-                        if not isinstance(current_data, list): current_data = []
-                except: current_data = []
-            
-            # 4. 追加并保存
-            current_data.append(new_entry)
-            with open(PATHS['training_data'], "w", encoding="utf-8") as f:
-                json.dump(current_data, f, ensure_ascii=False, indent=2)
-            
-            return len(current_data)
-        except Exception as e:
-            print(f"[ERROR] append_to_finetune 失败: {str(e)}")
-            return 0
+        return faiss.IndexFlatL2(1024), []
 
-# 本地 Embedder，使用 sentence-transformers
-class LocalEmbedder:
-    def __init__(self):
+    @staticmethod
+    def append_to_finetune(case_text: str, scores: Dict, sys_prompt: str, user_tpl: str, master_comment: str = "（人工校准）") -> bool:
+        """将判例写入微调数据集 (.jsonl)"""
         try:
-            from sentence_transformers import SentenceTransformer
-            # 使用轻量级模型，速度快，适合 CPU/单卡
-            # 第一次运行会自动下载模型 (~80MB)
-            self.model = SentenceTransformer('all-MiniLM-L6-v2') 
-            self.dim = 384
+            user_content = user_tpl.format(product_desc=case_text, context_text="", case_text="")
+            assistant_content = json.dumps({"master_comment": master_comment, "scores": scores}, ensure_ascii=False)
+            entry = {
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": assistant_content}
+                ]
+            }
+            with open(PATHS.training_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return True
         except Exception as e:
-            st.error(f"Embedding 模型加载失败，请确保安装了 sentence-transformers: {e}")
-            self.model = None
-            self.dim = 384
+            print(f"[ERROR] Finetune append failed: {e}")
+            return False
+
+    @staticmethod
+    def save_ft_status(job_id, status, fine_tuned_model=None):
+        data = {"job_id": job_id, "status": status, "timestamp": time.time()}
+        if fine_tuned_model: data["fine_tuned_model"] = fine_tuned_model
+        with open(PATHS.ft_status, 'w') as f: json.dump(data, f)
+
+    @staticmethod
+    def load_ft_status():
+        if PATHS.ft_status.exists():
+            try: return json.load(open(PATHS.ft_status, 'r'))
+            except: pass
+        return None
+
+# ==========================================
+# [SECTION 2] AI 服务 (Embedding & LLM)
+# ==========================================
+
+class AliyunEmbedder:
+    def __init__(self, api_key):
+        self.model_name = "text-embedding-v4"
+        dashscope.api_key = api_key 
 
     def encode(self, texts: List[str]) -> np.ndarray:
-        if not texts or not self.model: return np.zeros((0, self.dim), dtype="float32")
+        if not texts: return np.zeros((0, 1024), dtype="float32")
         if isinstance(texts, str): texts = [texts]
         try:
-            embeddings = self.model.encode(texts)
-            return np.array(embeddings).astype("float32")
-        except: 
-            return np.zeros((len(texts), self.dim), dtype="float32")
+            resp = TextEmbedding.call(model=self.model_name, input=texts)
+            if resp.status_code == HTTPStatus.OK:
+                return np.array([i['embedding'] for i in resp.output['embeddings']]).astype("float32")
+        except: pass
+        return np.zeros((len(texts), 1024), dtype="float32")
 
-# 默认 Prompt (保持不变)
-DEFAULT_PROMPT_CONFIG = {
-    "system_template": """你是一名资深的茶饮产品研发与感官分析专家。
-请基于给定的产品描述、参考资料和相似历史判例，严格按照"罗马测评法2.0"进行专业评分。
-
-====================
-一、评分方法
-====================
-六因子（0-9分）：
-1. 优雅性：香气愉悦感
-2. 辨识度：香气记忆点
-3. 协调性：融合度
-4. 饱和度：浓厚度
-5. 持久性：余韵
-6. 苦涩度：舒适度（分数越高越舒适，越不苦）
-
-====================
-二、输出约束
-====================
-请直接输出 JSON 格式，包含 "master_comment" 和 "scores" 两个字段。不要输出任何 Markdown 标记或多余的解释。""",
+def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, embedder: AliyunEmbedder, client: OpenAI, model_id: str, k_num: int, c_num: int):
+    """执行 RAG 检索与 LLM 评分"""
+    # 1. 向量化与 RAG 检索
+    vec = embedder.encode([text]) 
     
-    "user_template": """【待评分产品】
-{product_desc}
-
-【参考标准】
-{context_text}
-
-【历史判例】
-{case_text}
-
-请输出JSON结果："""
-}
-
-# ==========================================
-# 2. 逻辑函数
-# ==========================================
-
-# 核心评分函数
-def run_scoring(text, kb_res, case_res, prompt_cfg, embedder, client, model_id, r_num, c_num): 
-    vec = embedder.encode([text])
-    
-    # RAG 检索
-    ctx_txt, hits = "（无资料）", []
-    if kb_res[0].ntotal > 0: 
-        _, idx = kb_res[0].search(vec, r_num)
-        hits = [kb_res[1][i] for i in idx[0] if i < len(kb_res[1]) and i >= 0]
-        if hits: ctx_txt = "\n".join([f"- {h[:150]}..." for h in hits])
+    ctx_txt, hits = "（无手册资料）", []
+    if kb_res[0].ntotal > 0:
+        _, idx = kb_res[0].search(vec, k_num)
+        hits = [kb_res[1][i] for i in idx[0] if i < len(kb_res[1])]
+        ctx_txt = "\n".join([f"- {h[:200]}..." for h in hits])
         
-    # 判例检索
-    case_txt, found_cases = "（无判例）", []
-    if case_res[0].ntotal > 0: 
+    case_txt, found_cases = "（无相似判例）", []
+    if case_res[0].ntotal > 0:
         _, idx = case_res[0].search(vec, c_num)
         for i in idx[0]:
             if i < len(case_res[1]) and i >= 0:
                 c = case_res[1][i]
                 found_cases.append(c)
-                # 简化判例展示，节省 Context Window
                 sc = c.get('scores', {})
-                u_sc = sc.get('优雅性',{}).get('score', '-')
-                case_txt += f"\n- {c['text'][:30]}... (优雅:{u_sc})"
+                u_sc = sc.get('优雅性',{}).get('score', 0) if isinstance(sc,dict) and '优雅性' in sc else 0
+                k_sc = sc.get('苦涩度',{}).get('score', 0) if isinstance(sc,dict) and '苦涩度' in sc else 0
+                case_txt += f"\n参考案例: {c['text'][:30]}... -> 优雅性:{u_sc} 苦涩度:{k_sc}"
 
-    sys_p = prompt_cfg.get('system_template', DEFAULT_PROMPT_CONFIG['system_template'])
-    user_p = prompt_cfg.get('user_template', DEFAULT_PROMPT_CONFIG['user_template']).format(
-        product_desc=text, context_text=ctx_txt, case_text=case_txt
-    )
+    # 2. 组装 Prompt
+    sys_p = prompt_cfg.get('system_template', "")
+    user_p = prompt_cfg.get('user_template', "").format(product_desc=text, context_text=ctx_txt, case_text=case_txt)
 
+    # 3. 调用 LLM
     try:
-        # 调用本地 vLLM
         resp = client.chat.completions.create(
-            model=model_id, 
+            model=model_id,
             messages=[{"role":"system", "content":sys_p}, {"role":"user", "content":user_p}],
-            temperature=0.3,
-            max_tokens=1024,
-            # Qwen2.5 支持 json_object 模式，确保输出格式稳定
-            response_format={"type": "json_object"} 
+            response_format={"type": "json_object"},
+            temperature=0.3
         )
-        content = resp.choices[0].message.content
-        return json.loads(content), hits, found_cases
+        return json.loads(resp.choices[0].message.content), hits, found_cases
     except Exception as e:
-        st.error(f"推理错误 (请检查 vLLM 是否启动): {e}")
+        st.error(f"Inference Error: {e}")
         return None, [], []
 
-# 风味形态图
-def calculate_section_scores(scores):
-    s = scores["scores"]
-    def g(k): return s.get(k, {}).get("score", 0)
-    top  = (g("优雅性") + g("辨识度")) / 2
-    mid  = (g("协调性") + g("饱和度")) / 2
-    base = (g("持久性") + g("苦涩度")) / 2
-    return top, mid, base
+# ==========================================
+# [SECTION 3] 辅助与可视化
+# ==========================================
 
-def plot_flavor_shape(scores_data):
-    top, mid, base = calculate_section_scores(scores_data)
+def parse_file(uploaded_file) -> str:
+    """解析上传文件"""
+    try:
+        if uploaded_file.name.endswith('.txt'): return uploaded_file.read().decode("utf-8")
+        if uploaded_file.name.endswith('.pdf'): return "".join([p.extract_text() for p in PdfReader(uploaded_file).pages])
+        if uploaded_file.name.endswith('.docx'): return "\n".join([p.text for p in Document(uploaded_file).paragraphs])
+    except: return ""
+    return ""
+
+def create_word_report(results: List[Dict]) -> BytesIO:
+    """生成Word报告"""
+    doc = Document()
+    doc.add_heading("茶评批量评分报告", 0)
+    for item in results:
+        doc.add_heading(f"条目 {item['id']}", 1)
+        doc.add_paragraph(f"原文：{item['text']}")
+        s = item.get('scores', {}).get('scores', {})
+        mc = item.get('scores', {}).get('master_comment', '')
+        if mc: doc.add_paragraph(f"总评：{mc}", style="Intense Quote")
+        
+        table = doc.add_table(rows=1, cols=4)
+        table.style = 'Table Grid'
+        hdr = table.rows[0].cells
+        hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = '因子', '分数', '评语', '建议'
+        for k, v in s.items():
+            r = table.add_row().cells
+            r[0].text = k
+            r[1].text = str(v.get('score',''))
+            r[2].text = v.get('comment','')
+            r[3].text = v.get('suggestion','')
+        doc.add_paragraph("_"*20)
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio
+
+def plot_flavor_shape(scores_data: Dict):
+    """绘制风味形态图"""
+    s = scores_data["scores"]
+    top = (s["优雅性"]["score"] + s["辨识度"]["score"]) / 2
+    mid = (s["协调性"]["score"] + s["饱和度"]["score"]) / 2
+    base = (s["持久性"]["score"] + s["苦涩度"]["score"]) / 2
+    
     fig, ax = plt.subplots(figsize=(4, 5))
-    fig.patch.set_alpha(0)
-    ax.patch.set_alpha(0)
+    fig.patch.set_alpha(0); ax.patch.set_alpha(0)
+
     y = np.array([1, 2, 3]) 
     x = np.array([base, mid, top])
     y_new = np.linspace(1, 3, 300)
@@ -242,223 +288,295 @@ def plot_flavor_shape(scores_data):
     except:
         x_smooth = np.interp(y_new, y, x)
     x_smooth = np.maximum(x_smooth, 0.1)
+
+    colors = {'base': '#8B4513', 'mid': '#D2691E', 'top': '#FFD700'}
+    for mask, col in [((y_new>=1.0)&(y_new<=1.6), colors['base']), 
+                      ((y_new>1.6)&(y_new<=2.4), colors['mid']), 
+                      ((y_new>2.4)&(y_new<=3.0), colors['top'])]:
+        ax.fill_betweenx(y_new[mask], -x_smooth[mask], x_smooth[mask], color=col, alpha=0.9, edgecolor=None)
+
+    ax.plot(x_smooth, y_new, 'k', linewidth=1, alpha=0.2)
+    ax.plot(-x_smooth, y_new, 'k', linewidth=1, alpha=0.2)
+    ax.axhline(y=1.6, color='w', linestyle=':', alpha=0.5)
+    ax.axhline(y=2.4, color='w', linestyle=':', alpha=0.5)
     
-    # 简单的可视化填充
-    ax.fill_betweenx(y_new, -x_smooth, x_smooth, color='#4CAF50', alpha=0.6)
-    ax.text(0, 2.7, f"前调 {top:.1f}", ha='center', color='white', fontweight='bold')
-    ax.text(0, 2.0, f"中调 {mid:.1f}", ha='center', color='white', fontweight='bold')
-    ax.text(0, 1.3, f"后调 {base:.1f}", ha='center', color='white', fontweight='bold')
-    ax.axis('off')
-    ax.set_xlim(-10, 10)
+    font = {'ha': 'center', 'va': 'center', 'color': 'white', 'fontweight': 'bold', 'fontsize': 12}
+    ax.text(0, 2.7, f"Top\n{top:.1f}", **font)
+    ax.text(0, 2.0, f"Mid\n{mid:.1f}", **font)
+    ax.text(0, 1.3, f"Base\n{base:.1f}", **font)
+    ax.axis('off'); ax.set_xlim(-10, 10); ax.set_ylim(0.8, 3.2)
     return fig
 
+def bootstrap_seed_cases(embedder: AliyunEmbedder):
+    """
+    初始化判例库：如果内存/磁盘中为空，则从 seed_case.json 文件读取。
+    """
+    case_idx, case_data = st.session_state.cases
+    if len(case_data) > 0: return
+
+    # 从外部 JSON 加载
+    seed_cases = ResourceManager.load_external_json(PATHS.SRC_SEED_CASES)
+    if not seed_cases:
+        st.warning("seed_case.json 未找到或为空，判例库初始化跳过。")
+        return
+
+    texts = [c["text"] for c in seed_cases]
+    vecs = embedder.encode(texts)
+
+    if case_idx.ntotal == 0: case_idx = faiss.IndexFlatL2(1024)
+    if len(vecs) > 0:
+        case_idx.add(vecs)
+        case_data.extend(seed_cases)
+        st.session_state.cases = (case_idx, case_data)
+        ResourceManager.save(case_idx, case_data, PATHS.case_index, PATHS.case_data, is_json=True)
+
 # ==========================================
-# 3. 页面初始化
+# [SECTION 4] 主程序逻辑
 # ==========================================
 
+# A. 初始化 Session
 if'loaded' not in st.session_state:
-    # 第一次加载时，如果发现 index 维度不匹配（例如之前是1024，现在是384），需要处理
-    # 这里简单处理：如果报错就重建空的
-    try:
-        kb_idx, kb_data = DataManager.load(PATHS['kb_index'], PATHS['kb_chunks'])
-    except:
-        kb_idx, kb_data = faiss.IndexFlatL2(384), []
-        
-    try:
-        case_idx, case_data = DataManager.load(PATHS['case_index'], PATHS['case_data'], is_json=True)
-    except:
-        case_idx, case_data = faiss.IndexFlatL2(384), []
-
+    # 1. 加载RAG与判例数据
+    kb_idx, kb_data = ResourceManager.load(PATHS.kb_index, PATHS.kb_chunks)
+    case_idx, case_data = ResourceManager.load(PATHS.case_index, PATHS.case_data, is_json=True)
     st.session_state.kb = (kb_idx, kb_data)
     st.session_state.cases = (case_idx, case_data)
     
-    if PATHS['prompt'].exists():
+    # 2. 加载 Prompt 配置
+    # 优先读取持久化的 prompts.json，如果没有，则从 sys_p.txt 构建默认配置
+    if PATHS.prompt_config_file.exists():
         try:
-            with open(PATHS['prompt'], 'r') as f: st.session_state.prompt_config = json.load(f)
-        except: st.session_state.prompt_config = DEFAULT_PROMPT_CONFIG.copy()
-    else:
-        st.session_state.prompt_config = DEFAULT_PROMPT_CONFIG.copy()
+            with open(PATHS.prompt_config_file, 'r') as f:
+                st.session_state.prompt_config = json.load(f)
+        except: pass
     
-    # 初始化 Embedder
-    st.session_state.embedder = LocalEmbedder()
+    if'prompt_config' not in st.session_state:
+        # 从 sys_p.txt 读取 System Prompt，使用硬编码的 User Prompt
+        sys_prompt_content = ResourceManager.load_external_text(PATHS.SRC_SYS_PROMPT, fallback="你是一名茶评专家...")
+        st.session_state.prompt_config = {
+            "system_template": sys_prompt_content,
+            "user_template": DEFAULT_USER_TEMPLATE
+        }
     
     st.session_state.loaded = True
 
-# 初始化 OpenAI Client (指向 vLLM)
-# 请确保你的 vLLM 正在运行于 port 8000
-client = OpenAI(
-    api_key="EMPTY", 
-    base_url="http://localhost:8000/v1"
-)
-
-# 侧边栏
+# B. 侧边栏
 with st.sidebar:
-    st.header("⚙️ 本地配置")
-    st.success("🟢 已连接本地 vLLM")
-    
-    model_name = "Qwen2.5-7B-Instruct" # 必须与 vLLM 启动参数一致
-    st.caption(f"当前模型: {model_name}")
-    
+    st.header("⚙️ 系统配置")
+    st.markdown("**🔐 API 配置**")
+    aliyun_key = os.getenv("ALIYUN_API_KEY") or st.secrets.get("ALIYUN_API_KEY", "")
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY") or st.secrets.get("DEEPSEEK_API_KEY", "")
+
+    if not aliyun_key or not deepseek_key:
+        st.warning("⚠️ 未配置 API Key")
+        st.stop()
+    else:
+        st.success("✅ API 就绪")
+
     st.markdown("---")
-    st.markdown("**数据统计**")
-    st.caption(f"RAG片段: {len(st.session_state.kb[1])} 条")
-    st.caption(f"历史判例: {len(st.session_state.cases[1])} 条")
+    st.markdown(f"**模型：** `Qwen2.5-7B-Instruct`")
     
-    if PATHS['training_data'].exists():
-        try:
-            with open(PATHS['training_data'], 'r') as f:
-                d = json.load(f)
-            st.caption(f"💪 **待微调数据: {len(d)} 条**")
-        except: pass
+    ft_status = ResourceManager.load_ft_status()
+    if ft_status and ft_status.get("status") == "succeeded":
+        st.info(f"🎉 发现微调模型：`{ft_status.get('fine_tuned_model')}`")
+
+    embedder = AliyunEmbedder(aliyun_key)
+    client = OpenAI(api_key="dummy", base_url="http://117.50.89.74:8000/v1")
     
-    if st.button("🗑️ 清空所有数据 (慎点)"):
-        import shutil
-        shutil.rmtree(DATA_DIR)
-        DATA_DIR.mkdir()
-        st.warning("数据已清空，请刷新页面")
+    # 确保初始化判例
+    bootstrap_seed_cases(embedder)
 
-st.markdown('<div class="main-title">🍵 茶品 AI 评分器 (vLLM版)</div>', unsafe_allow_html=True)
+    st.markdown("---")
+    st.caption(f"知识库: {len(st.session_state.kb[1])} | 判例库: {len(st.session_state.cases[1])}")
+    
+    if st.button("📤 导出数据"):
+        import zipfile, shutil
+        temp_dir = Path("./temp_export"); temp_dir.mkdir(exist_ok=True)
+        for p in [PATHS.kb_index, PATHS.kb_chunks, PATHS.case_index, PATHS.case_data, PATHS.prompt_config_file]:
+            if p.exists(): shutil.copy2(p, temp_dir / p.name)
+        zip_path = Path("./rag_export.zip")
+        with zipfile.ZipFile(zip_path, 'w') as z:
+            for f in temp_dir.iterdir(): z.write(f, f.name)
+        with open(zip_path, 'rb') as f:
+            st.download_button("⬇️ 下载ZIP", f, "tea_data.zip", "application/zip")
+        shutil.rmtree(temp_dir); zip_path.unlink()
 
-# ==========================================
-# 4. 功能标签页
-# ==========================================
-tab1, tab2 = st.tabs(["💡 交互评分与校准", "🚀 微调数据中心"])
+    if st.button("📥 导入数据"):
+        u_zip = st.file_uploader("上传ZIP", type=['zip'])
+        if u_zip:
+            import zipfile, tempfile
+            with tempfile.TemporaryDirectory() as td:
+                zp = Path(td)/"u.zip"
+                with open(zp,'wb') as f: f.write(u_zip.getvalue())
+                with zipfile.ZipFile(zp,'r') as z: z.extractall(PATHS.DATA_DIR)
+                st.success("导入成功，请刷新"); st.rerun()
+
+# C. 主界面
+st.markdown('<div class="main-title">🍵 茶品六因子 AI 评分器 Pro</div>', unsafe_allow_html=True)
+st.markdown('<div class="slogan">“一片叶子落入水中，改变了水的味道...”</div>', unsafe_allow_html=True)
+
+tab1, tab2, tab3 = st.tabs(["💡 交互评分", "🚀 批量评分", "🛠️ 模型调优"])
 
 # --- Tab 1: 交互评分 ---
 with tab1:
-    st.info("💡 流程：输入茶评 -> AI 评分 -> **专家人工校准** -> 存入训练库")
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        # 使用 Session State 保持输入
-        if'user_input' not in st.session_state: st.session_state.user_input = ""
-        user_input = st.text_area("输入茶评描述:", value=st.session_state.user_input, height=120)
-        st.session_state.user_input = user_input
-        
-        if st.button("🚀 开始评分", type="primary"):
-            if not user_input: st.warning("请输入内容")
-            else:
-                with st.spinner(f"AI 正在思考..."):
-                    scores, kb_hits, case_hits = run_scoring(
-                        user_input, st.session_state.kb, st.session_state.cases,
-                        st.session_state.prompt_config, st.session_state.embedder, client, model_name, 3, 2
-                    )
-                    if scores:
-                        st.session_state.last_scores = scores
-                        st.session_state.last_master = scores.get("master_comment", "")
-                        st.rerun() # 刷新页面显示结果
+    st.info("AI 将参考知识库与判例库进行评分。")
+    c1, c2, c3, c4 = st.columns([1, 3, 3, 1])
+    r_num = c2.number_input("参考RAG数量", 1, 20, 3, key="r1")
+    c_num = c3.number_input("参考判例数量", 1, 20, 2, key="c1")
 
-    # 显示结果区域
-    if'last_scores' in st.session_state and st.session_state.last_scores:
-        scores = st.session_state.last_scores
-        
-        st.markdown("---")
-        st.subheader("📊 评分结果 (请专家校准)")
-        
-        # 左右分栏：左边是可视化，右边是校准表单
-        res_col1, res_col2 = st.columns([1, 2])
-        
-        with res_col1:
-            st.markdown(f"**AI 生成总评:**\n\n> {st.session_state.last_master}")
-            fig = plot_flavor_shape(scores)
-            st.pyplot(fig)
-        
-        with res_col2:
-            with st.form("calibration_form"):
-                st.markdown("#### ✍️ 专家校准面板")
-                st.caption("请修正 AI 的评分，您的修正将成为模型变强的养料。")
-                
-                # 1. 校准总评
-                new_master = st.text_area("宗师总评 (校准)", value=st.session_state.last_master, height=80)
-                
-                # 2. 校准六因子
-                factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
-                s_dict = scores.get("scores", {})
-                new_scores = {}
-                
-                c1, c2 = st.columns(2)
-                for i, f in enumerate(factors):
-                    with (c1 if i % 2 == 0 else c2):
-                        current_data = s_dict.get(f, {})
-                        val = st.slider(f"{f}", 0, 9, int(current_data.get("score", 5)))
-                        cmt = st.text_input(f"评语 ({f})", current_data.get("comment", ""))
-                        sug = st.text_input(f"建议 ({f})", current_data.get("suggestion", ""))
-                        
-                        new_scores[f] = {"score": val, "comment": cmt, "suggestion": sug}
-                
-                submitted = st.form_submit_button("✅ 确认校准并保存到训练库", type="primary")
-                
-                if submitted:
-                    # 保存到微调数据文件
-                    sys_p = st.session_state.prompt_config['system_template']
-                    count = DataManager.append_to_finetune_dataset(
-                        user_input, new_scores, sys_p, new_master
-                    )
-                    
-                    # 同时也保存到判例库 (RAG)
-                    new_case = {"text": user_input, "scores": new_scores, "master_comment": new_master, "tags": "人工校准"}
-                    st.session_state.cases[1].append(new_case)
-                    vec = st.session_state.embedder.encode([user_input])
-                    st.session_state.cases[0].add(vec)
-                    DataManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS['case_index'], PATHS['case_data'], is_json=True)
-                    
-                    st.success(f"🎉 保存成功！当前训练数据量: {count} 条")
-                    time.sleep(1)
+    if'current_user_input' not in st.session_state: st.session_state.current_user_input = ""
+    user_input = st.text_area("输入茶评:", value=st.session_state.current_user_input, height=120, key="ui")
+    st.session_state.current_user_input = user_input
+    
+    if'last_scores' not in st.session_state: 
+        st.session_state.last_scores = None
+        st.session_state.last_master_comment = ""
+    
+    if st.button("开始评分", type="primary", use_container_width=True):
+        if not user_input: st.warning("请输入内容")
+        else:
+            with st.spinner("品鉴中..."):
+                scores, kb_h, case_h = run_scoring(user_input, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen2.5-7B-Instruct", r_num, c_num)
+                if scores:
+                    st.session_state.last_scores = scores
+                    st.session_state.last_master_comment = scores.get("master_comment", "")
                     st.rerun()
-
-# --- Tab 2: 微调数据中心 ---
-with tab2:
-    st.header("🏭 微调数据工厂")
-    st.markdown("""
-    这里存放了你在前台校准过的所有数据。
-    **使用步骤:**
-    1. 点击下方按钮下载 `dataset.json`。
-    2. 将文件放入服务器 `LLaMA-Factory/data` 文件夹。
-    3. 启动 LLaMA-Factory WebUI 进行微调。
-    """)
     
-    if PATHS['training_data'].exists():
-        with open(PATHS['training_data'], 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
-            
-        st.write(f"📊 当前已积累优质数据: **{len(raw_data)}** 条")
+    if st.session_state.last_scores:
+        s = st.session_state.last_scores["scores"]
+        mc = st.session_state.last_master_comment
+        st.markdown(f'<div class="master-comment"><b>👵 宗师总评：</b><br>{mc}</div>', unsafe_allow_html=True)
         
-        # 数据预览
-        with st.expander("🔍 预览最后 3 条数据"):
-            st.json(raw_data[-3:] if len(raw_data) > 3 else raw_data)
+        cols = st.columns(3)
+        factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
+        for i, f in enumerate(factors):
+            if f in s:
+                d = s[f]
+                with cols[i%3]:
+                    st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{f}</span><span>{d['score']}/9</span></div><div>{d['comment']}</div><div class="advice-tag">💡 {d.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
         
-        # 下载按钮
-        json_str = json.dumps(raw_data, ensure_ascii=False, indent=2)
-        st.download_button(
-            label="⬇️ 下载 dataset.json (LLaMA-Factory专用)",
-            data=json_str,
-            file_name="tea_finetune.json",
-            mime="application/json"
-        )
-    else:
-        st.warning("暂无数据，请去【交互评分与校准】页面进行打标。")
+        st.subheader("📊 风味形态")
+        st.pyplot(plot_flavor_shape(st.session_state.last_scores), use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("📚 RAG 知识库管理")
-    up_files = st.file_uploader("上传 PDF/TXT 补充知识库", accept_multiple_files=True)
-    if up_files and st.button("更新知识库"):
-        with st.spinner("正在向量化..."):
-            raw_text = ""
-            for f in up_files:
-                if f.name.endswith(".txt"): raw_text += f.read().decode("utf-8")
-                elif f.name.endswith(".pdf"): 
-                    reader = PdfReader(f)
-                    for page in reader.pages: raw_text += page.extract_text()
+        with st.expander("📝 校准与保存", expanded=True):
+            if st.button("💾 仅保存原始评分"):
+                nc = {"text": user_input, "scores": s, "tags": "交互-原始", "master_comment": mc, "created_at": time.strftime("%Y-%m-%d")}
+                st.session_state.cases[1].append(nc)
+                st.session_state.cases[0].add(embedder.encode([user_input]))
+                ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
+                st.success("已保存"); st.rerun()
+
+            st.markdown("---")
+            st.markdown("**完整校准**")
+            cal_master = st.text_area("校准总评", mc)
+            cal_scores = {}
+            ftabs = st.tabs(factors)
+            for i, f in enumerate(factors):
+                with ftabs[i]:
+                    if f in s:
+                        cal_scores[f] = {
+                            "score": st.slider("分数",0,9,int(s[f]['score']), key=f"s_{f}"),
+                            "comment": st.text_area("评语", s[f]['comment'], key=f"c_{f}"),
+                            "suggestion": st.text_area("建议", s[f].get('suggestion',''), key=f"sg_{f}")
+                        }
             
-            # 简单切分
-            chunk_size = 300
-            chunks = [raw_text[i:i+chunk_size] for i in range(0, len(raw_text), chunk_size)]
-            
-            # 向量化
-            vecs = st.session_state.embedder.encode(chunks)
-            st.session_state.kb[0].add(vecs)
-            st.session_state.kb[1].extend(chunks)
-            
-            # 保存
-            DataManager.save(st.session_state.kb[0], st.session_state.kb[1], PATHS['kb_index'], PATHS['kb_chunks'])
-            st.success(f"已新增 {len(chunks)} 条知识片段！")
+            if st.button("💾 保存校准评分"):
+                nc = {"text": user_input, "scores": cal_scores, "tags": "交互-校准", "master_comment": cal_master, "created_at": time.strftime("%Y-%m-%d")}
+                st.session_state.cases[1].append(nc)
+                st.session_state.cases[0].add(embedder.encode([user_input]))
+                ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
+                ResourceManager.append_to_finetune(user_input, cal_scores, st.session_state.prompt_config['system_template'], st.session_state.prompt_config['user_template'], cal_master)
+                st.success("校准已保存"); st.rerun()
+
+# --- Tab 2: 批量评分 ---
+with tab2:
+    f = st.file_uploader("上传文件 (.txt/.docx)")
+    c1, c2 = st.columns(2)
+    r_n = c1.number_input("RAG数", 1, 20, 3, key="rb")
+    c_n = c2.number_input("Case数", 1, 20, 2, key="cb")
+    if f and st.button("批量处理"):
+        lines = [l.strip() for l in parse_file(f).split('\n') if len(l)>10]
+        res, bar = [], st.progress(0)
+        for i, l in enumerate(lines):
+            s, _, _ = run_scoring(l, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen2.5-7B-Instruct", r_n, c_n)
+            res.append({"id":i+1, "text":l, "scores":s})
+            bar.progress((i+1)/len(lines))
+        st.success("完成")
+        st.download_button("下载Word", create_word_report(res), "report.docx")
+
+# --- Tab 3: 模型调优 ---
+with tab3:
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.subheader("📚 知识库")
+        up = st.file_uploader("上传PDF", accept_multiple_files=True)
+        if up and st.button("更新知识库"):
+            raw = "".join([parse_file(u) for u in up])
+            cks = [raw[i:i+600] for i in range(0,len(raw),500)]
+            idx = faiss.IndexFlatL2(1024); idx.add(embedder.encode(cks))
+            st.session_state.kb = (idx, cks)
+            ResourceManager.save(idx, cks, PATHS.kb_index, PATHS.kb_chunks)
+            st.success("已更新"); st.rerun()
+
+    with c2:
+        st.subheader("⚖️ 判例与微调")
+        st.info(f"现有判例: {len(st.session_state.cases[1])}")
+        
+        if st.button("将判例转为微调数据"):
+            cnt = 0
+            for c in st.session_state.cases[1]:
+                if ResourceManager.append_to_finetune(c["text"], c["scores"], st.session_state.prompt_config.get('system_template',''), st.session_state.prompt_config.get('user_template','')): cnt += 1
+            st.success(f"导入 {cnt} 条")
+
+        st.markdown("#### DeepSeek 微调")
+        if st.button("启动微调"):
+            try:
+                with open(PATHS.training_file, "rb") as f: file_obj = client.files.create(file=f, purpose="fine-tune")
+                # 注意：此处 Model ID 可能需根据 DeepSeek 实际 API 调整
+                job = client.fine_tuning.jobs.create(training_file=file_obj.id, model="deepseek-chat", suffix="tea-v1")
+                ResourceManager.save_ft_status(job.id, "queued")
+                st.success(f"任务ID: {job.id}")
+            except Exception as e:
+                st.error(f"失败: {e}")
+                if PATHS.training_file.exists():
+                    with open(PATHS.training_file, "rb") as f: st.download_button("下载数据", f, "train.jsonl")
+
+        fts = ResourceManager.load_ft_status()
+        if fts:
+            st.code(f"Job: {fts.get('job_id')}\nStatus: {fts.get('status')}")
+            if st.button("刷新状态"):
+                try:
+                    job = client.fine_tuning.jobs.retrieve(fts['job_id'])
+                    ResourceManager.save_ft_status(job.id, job.status, getattr(job,'fine_tuned_model',None))
+                    st.rerun()
+                except: pass
+
+        with st.expander("手动录入判例"):
+            with st.form("manual_case"):
+                txt = st.text_area("描述")
+                in_s = {}
+                for f in factors:
+                    in_s[f] = {"score": st.number_input(f"{f}",0,9,7), "comment": st.text_input(f"{f}评语")}
+                if st.form_submit_button("保存"):
+                    nc = {"text": txt, "scores": in_s, "tags": "手动"}
+                    st.session_state.cases[1].append(nc)
+                    st.session_state.cases[0].add(embedder.encode([txt]))
+                    ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
+                    st.success("已保存")
+
+    with c3:
+        st.subheader("📝 Prompt 配置")
+        pc = st.session_state.prompt_config
+        st.caption("系统提示词 (system_template) 默认加载自 sys_p.txt")
+        st.caption("用户提示词 (user_template) 默认使用内置代码配置")
+        
+        sys_t = st.text_area("系统提示词", pc.get('system_template',''), height=200)
+        user_t = st.text_area("用户提示词", pc.get('user_template',''), height=200)
+        
+        if st.button("保存 Prompt 到文件"):
+            new_cfg = {"system_template": sys_t, "user_template": user_t}
+            st.session_state.prompt_config = new_cfg
+            with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
+                json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+            st.success("Prompt 已更新并保存到 prompts.json")
