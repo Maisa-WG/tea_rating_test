@@ -1420,7 +1420,7 @@ with st.sidebar:
     model_id = model_name   # model_id 和 model_name在此处（deepseek）是一样的 model_id kept for future extension (e.g., switching to fine-tuned model), currently fixed.
 
     embedder = AliyunEmbedder(aliyun_key)
-    client = OpenAI(api_key="dummy", base_url="http://117.50.89.74:8000/v1")
+    client = OpenAI(api_key="dummy", base_url="http://117.50.89.74:8000/v1/chat/completions")
     bootstrap_seed_cases_if_empty(embedder)
 
     
@@ -2147,6 +2147,7 @@ with tab1:
             with open(PATHS['prompt'], 'w') as f: json.dump(new_cfg, f, ensure_ascii=False)
 
             st.success("Prompt 已保存！"); time.sleep(1); st.rerun()
+
 
 
 
