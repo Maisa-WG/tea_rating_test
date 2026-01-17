@@ -1,3 +1,15 @@
+''' 
+删去的代码：
+这个方法略显多余 原放在        st.subheader("🛠️ 评分校准与修正")  这行之前的段落
+st.subheader("📝 得分校准与保存")
+if st.button("💾 评分准确！一键保存！"):
+    nc = {"text": user_input, "scores": s, "tags": "交互-原始", "master_comment": mc, "created_at": time.strftime("%Y-%m-%d")}
+    st.session_state.cases[1].append(nc)
+    st.session_state.cases[0].add(embedder.encode([user_input]))
+    ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
+    st.success("已保存"); st.rerun()
+'''
+
 import streamlit as st
 import os
 import json
@@ -605,12 +617,3 @@ with tab3:
             st.success("Prompt 已更新并保存到 prompts.json")
 
 
-''' 这个方法略显多余 原放在        st.subheader("🛠️ 评分校准与修正")  这行之前的段落
-st.subheader("📝 得分校准与保存")
-if st.button("💾 评分准确！一键保存！"):
-    nc = {"text": user_input, "scores": s, "tags": "交互-原始", "master_comment": mc, "created_at": time.strftime("%Y-%m-%d")}
-    st.session_state.cases[1].append(nc)
-    st.session_state.cases[0].add(embedder.encode([user_input]))
-    ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
-    st.success("已保存"); st.rerun()
-'''
