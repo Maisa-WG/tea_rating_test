@@ -463,7 +463,7 @@ with tab1:
             for i, f in enumerate(factors):
                 if f in s:
                     d = s[f]
-                    with cols[i%3]:
+                    with cols[i%2]:
                         st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{f}</span><span>{d['score']}/9</span></div><div>{d['comment']}</div><div class="advice-tag">💡 {d.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
         
         st.subheader("📝 得分校准与保存")
