@@ -392,7 +392,7 @@ with st.sidebar:
     # 展示当前RAG与判例容量
     st.markdown("---")
     st.markdown(f"知识库: {len(st.session_state.kb[1])} | 判例库: {len(st.session_state.cases[1])}")
-    st.caption("快速上传仅支持.zip文件格式。\n少量文件上传请至\"模型调优\"板块。")
+    st.caption(f"快速上传仅支持.zip文件格式。\n少量文件上传请至\"模型调优\"板块。")
     # 
     if st.button("📤 导出数据"):
         import zipfile, shutil
@@ -427,7 +427,7 @@ with tab1:
     st.info("将参考知识库与判例库进行评分。确认结果可一键更新判例库。")
     c1, c2, c3, c4, c5 = st.columns([1, 3, 1, 3, 1])
     r_num = c2.number_input("参考知识库条目数量", 1, 20, 3, key="r1")
-    c_num = c3.number_input("参考判例库条目数量", 1, 20, 2, key="c1")
+    c_num = c4.number_input("参考判例库条目数量", 1, 20, 2, key="c1")
     # 使用会话状态存储用户输入，避免刷新后丢失
     if'current_user_input' not in st.session_state: st.session_state.current_user_input = ""
     user_input = st.text_area("请输入茶评描述:", value=st.session_state.current_user_input, height=150, key="ui")
