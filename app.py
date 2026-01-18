@@ -526,7 +526,7 @@ with tab2:
 # --- Tab 3: 模型调优 ---
 with tab3:
     MANAGER_URL = "http://117.50.89.74:8001"
-    c1, c2 = st.columns([7, 3])
+    c1, c2 = st.columns([6, 4])
     with c1:
         st.subheader("📚 知识库 (RAG)")
         st.caption("上传PDF/文档以增强模型回答的准确性")
@@ -546,9 +546,8 @@ with tab3:
                     st.rerun()
                 else:
                     st.warning("未提取到有效文本")
-
-        st.markdown("---")
-        st.subheader("📚 判例库(CASE)")
+        st.divider()
+        st.subheader("📕 判例库 (CASE)")
         with st.expander("➕ 手动添加精细判例"):
             with st.form("case_form"):
                 f_txt = st.text_area("判例描述", height=80)
@@ -606,7 +605,6 @@ with tab3:
             st.markdown("⚠️ **注意：** 此时无法进行评分交互，请耐心等待训练完成。")
         elif server_status == "offline":
             st.error("🔴 无法连接到 GPU 服务器 (请联系管理员)")
-        st.divider()
 
         # 3. 数据准备区
         st.markdown("#### 1. 数据准备")
@@ -625,7 +623,6 @@ with tab3:
             cnt = 0
             # 清空旧文件，避免重复? 或者追加? 这里保持追加逻辑，但在UI提示
             for c in st.session_state.cases[1]:
-                # 这里的逻辑复用了你之前的 ResourceManager
                 if ResourceManager.append_to_finetune(
                     c["text"], 
                     c["scores"], 
@@ -651,7 +648,7 @@ with tab3:
                         # 发送 POST 请求上传文件
                         with st.spinner("正在上传数据并启动训练任务..."):
                             files = {'file': ('tea_feedback.jsonl', f, 'application/json')}
-                            r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=10)
+                            r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=100)
                             
                         if r.status_code == 200:
                             st.balloons()
@@ -661,9 +658,6 @@ with tab3:
                             st.error(f"❌ 提交失败: {r.text}")
                 except Exception as e:
                     st.error(f"❌ 连接错误: {e}")
-
-
-
     
 with tab4:
     pc = st.session_state.prompt_config
