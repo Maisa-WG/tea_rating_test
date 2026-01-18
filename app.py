@@ -433,7 +433,7 @@ with st.sidebar:
 st.markdown('<div class="main-title">🍵 茶品六因子 AI 评分器 Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="slogan">“一片叶子落入水中，改变了水的味道...”</div>', unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["💡 交互评分", "🚀 批量评分", "🛠️ 模型调优"])
+tab1, tab2, tab3, tab4 = st.tabs(["💡 交互评分", "🚀 批量评分", "🛠️ 模型调优", "📲 提示词配置"])
 
 # --- Tab 1: 交互评分 ---
 with tab1:
@@ -509,9 +509,9 @@ with tab1:
 # --- Tab 2: 批量评分 ---
 with tab2:
     f = st.file_uploader("上传文件 (.txt/.docx)")
-    c1, c2 = st.columns(2)
-    r_n = c1.number_input("RAG数", 1, 20, 3, key="rb")
-    c_n = c2.number_input("Case数", 1, 20, 2, key="cb")
+    c1, c2, c3, c4, c5 = st.columns([1, 3, 1, 3, 1])
+    r_n = c2.number_input("参考知识库条目数量", 1, 20, 3, key="rb")
+    c_n = c4.number_input("参考判例库条目数量", 1, 20, 2, key="cb")
     if f and st.button("批量处理"):
         lines = [l.strip() for l in parse_file(f).split('\n') if len(l)>10]
         res, bar = [], st.progress(0)
@@ -524,7 +524,7 @@ with tab2:
 
 # --- Tab 3: 模型调优 ---
 with tab3:
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns([3,7])
     
     with c1:
         st.subheader("📚 知识库")
@@ -547,12 +547,12 @@ with tab3:
                 if ResourceManager.append_to_finetune(c["text"], c["scores"], st.session_state.prompt_config.get('system_template',''), st.session_state.prompt_config.get('user_template','')): cnt += 1
             st.success(f"导入 {cnt} 条")
 
-        st.markdown("#### DeepSeek 微调")
-        if st.button("启动微调"):
+        st.markdown("#### Qwen 微调")
+        if st.button("启动微调（约等待20分钟）"):
             try:
                 with open(PATHS.training_file, "rb") as f: file_obj = client.files.create(file=f, purpose="fine-tune")
                 # 注意：此处 Model ID 可能需根据 DeepSeek 实际 API 调整
-                job = client.fine_tuning.jobs.create(training_file=file_obj.id, model="deepseek-chat", suffix="tea-v1")
+                job = client.fine_tuning.jobs.create(training_file=file_obj.id, model="Qwen2.5-7B-Instruct", suffix="tea-v1")
                 ResourceManager.save_ft_status(job.id, "queued")
                 st.success(f"任务ID: {job.id}")
             except Exception as e:
@@ -600,20 +600,19 @@ with tab3:
                         st.success("已保存！")
                         time.sleep(1); st.rerun()
     
-    with c3:
-        st.subheader("📝 Prompt 配置")
-        pc = st.session_state.prompt_config
-        st.caption("系统提示词 (system_template) 默认加载自 sys_p.txt")
-        st.caption("用户提示词 (user_template) 默认使用内置代码配置")
-        
-        sys_t = st.text_area("系统提示词", pc.get('system_template',''), height=200)
-        user_t = st.text_area("用户提示词", pc.get('user_template',''), height=200)
-        
-        if st.button("保存 Prompt 到文件"):
-            new_cfg = {"system_template": sys_t, "user_template": user_t}
-            st.session_state.prompt_config = new_cfg
-            with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
-                json.dump(new_cfg, f, ensure_ascii=False, indent=2)
-            st.success("Prompt 已更新并保存到 prompts.json")
+with tab4:
+    st.subheader("📝 Prompt 配置")
+    pc = st.session_state.prompt_config
+    st.markdown("系统提示词可以修改。完整全面的提示词会让大语言模型返回的更准确结果。")    
+    sys_t = st.text_area("系统提示词", pc.get('system_template',''), height=400)
+    st.markdown("用户提示词不可修改。其保证了发送内容与回答内容的基本结构，因此大语言模型的回答可被准确解析。")
+    user_t = st.text_area("用户提示词", pc.get('user_template',''), height=300, disabled=True)
+    
+    if st.button("保存 Prompt 到文件"):
+        new_cfg = {"system_template": sys_t, "user_template": user_t}
+        st.session_state.prompt_config = new_cfg
+        with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
+            json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+        st.success("Prompt 已更新并保存到 prompts.json")
 
 
