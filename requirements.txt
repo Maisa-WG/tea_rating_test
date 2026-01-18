@@ -11,3 +11,5 @@ plotly
 matplotlib
 scipy
 sentence_transformers
+PyGithub
+
