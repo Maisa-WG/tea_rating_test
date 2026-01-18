@@ -13,6 +13,7 @@ if st.button("💾 评分准确！一键保存！"):
 import streamlit as st
 import os
 import json
+import requests
 import numpy as np
 import faiss
 import time
@@ -524,53 +525,115 @@ with tab2:
 
 # --- Tab 3: 模型调优 ---
 with tab3:
-    c1, c2 = st.columns([3,7])
-    
+    MANAGER_URL = "http://117.50.89.74:8001"
+    c1, c2 = st.columns([3, 7])
     with c1:
-        st.subheader("📚 知识库")
-        up = st.file_uploader("上传PDF", accept_multiple_files=True)
+        st.subheader("📚 知识库 (RAG)")
+        st.caption("上传PDF/文档以增强模型回答的准确性")
+        up = st.file_uploader("上传资料", accept_multiple_files=True, key="kb_uploader")
         if up and st.button("更新知识库"):
-            raw = "".join([parse_file(u) for u in up])
-            cks = [raw[i:i+600] for i in range(0,len(raw),500)]
-            idx = faiss.IndexFlatL2(1024); idx.add(embedder.encode(cks))
-            st.session_state.kb = (idx, cks)
-            ResourceManager.save(idx, cks, PATHS.kb_index, PATHS.kb_chunks)
-            st.success("已更新"); st.rerun()
-
-    with c2:
-        st.subheader("⚖️ 判例与微调")
-        st.info(f"现有判例: {len(st.session_state.cases[1])}")
-        
-        if st.button("将判例转为微调数据"):
-            cnt = 0
-            for c in st.session_state.cases[1]:
-                if ResourceManager.append_to_finetune(c["text"], c["scores"], st.session_state.prompt_config.get('system_template',''), st.session_state.prompt_config.get('user_template','')): cnt += 1
-            st.success(f"导入 {cnt} 条")
-
-        st.markdown("#### Qwen 微调")
-        if st.button("启动微调（约等待20分钟）"):
-            try:
-                with open(PATHS.training_file, "rb") as f: file_obj = client.files.create(file=f, purpose="fine-tune")
-                # 注意：此处 Model ID 可能需根据 DeepSeek 实际 API 调整
-                job = client.fine_tuning.jobs.create(training_file=file_obj.id, model="Qwen2.5-7B-Instruct", suffix="tea-v1")
-                ResourceManager.save_ft_status(job.id, "queued")
-                st.success(f"任务ID: {job.id}")
-            except Exception as e:
-                st.error(f"失败: {e}")
-                if PATHS.training_file.exists():
-                    with open(PATHS.training_file, "rb") as f: st.download_button("下载数据", f, "train.jsonl")
-
-        fts = ResourceManager.load_ft_status()
-        if fts:
-            st.code(f"Job: {fts.get('job_id')}\nStatus: {fts.get('status')}")
-            if st.button("刷新状态"):
-                try:
-                    job = client.fine_tuning.jobs.retrieve(fts['job_id'])
-                    ResourceManager.save_ft_status(job.id, job.status, getattr(job,'fine_tuned_model',None))
+            with st.spinner("正在切片与向量化..."):
+                raw = "".join([parse_file(u) for u in up])
+                # 简单的切片逻辑
+                cks = [raw[i:i+600] for i in range(0, len(raw), 500)]
+                idx = faiss.IndexFlatL2(1024)
+                if len(cks) > 0:
+                    idx.add(embedder.encode(cks))
+                    st.session_state.kb = (idx, cks)
+                    ResourceManager.save(idx, cks, PATHS.kb_index, PATHS.kb_chunks)
+                    st.success(f"已更新 {len(cks)} 个知识片段")
+                    time.sleep(1)
                     st.rerun()
-                except: pass
+                else:
+                    st.warning("未提取到有效文本")
 
-        with st.expander("➕ 添加精细判例"):
+    # --- 右侧：微调控制 (核心修改部分) ---
+    with c2:
+        st.subheader("🚀 模型微调 (LoRA)")
+        # 1. 获取服务器状态
+        server_status = "unknown"
+        try:
+            # 设置短超时，防止界面卡死
+            resp = requests.get(f"{MANAGER_URL}/status", timeout=2)
+            if resp.status_code == 200:
+                status_data = resp.json()
+                # 根据返回的 vllm_status 判断
+                # 假如服务器返回 {"vllm_status": "running"} -> 空闲/推理中
+                # 假如服务器返回 {"vllm_status": "stopped"} -> 训练中
+                if status_data.get("vllm_status") == "running":
+                    server_status = "idle"
+                else:
+                    server_status = "training"
+            else:
+                server_status = "error"
+        except:
+            server_status = "offline"
+
+        if server_status == "idle":
+            st.success("🟢 服务器就绪 (正在进行推理服务)")
+        elif server_status == "training":
+            st.warning("🟠 正在微调训练中... (推理服务暂停)")
+            st.markdown("⚠️ **注意：** 此时无法进行评分交互，请耐心等待训练完成。")
+        elif server_status == "offline":
+            st.error("🔴 无法连接到 GPU 服务器 (请联系管理员)")
+        st.divider()
+
+        # 3. 数据准备区
+        st.markdown("#### 1. 数据准备")
+        # 读取本地已积累的微调数据
+        if PATHS.training_file.exists():
+            with open(PATHS.training_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            data_count = len(lines)
+        else:
+            data_count = 0
+            
+        st.info(f"当前积累判例数据：**{data_count} 条**")
+        
+        # 将判例库转为微调数据的按钮 (保持原逻辑)
+        if st.button("🔄 将当前所有判例转为微调数据"):
+            cnt = 0
+            # 清空旧文件，避免重复? 或者追加? 这里保持追加逻辑，但在UI提示
+            for c in st.session_state.cases[1]:
+                # 这里的逻辑复用了你之前的 ResourceManager
+                if ResourceManager.append_to_finetune(
+                    c["text"], 
+                    c["scores"], 
+                    st.session_state.prompt_config.get('system_template',''), 
+                    st.session_state.prompt_config.get('user_template','')
+                ): 
+                    cnt += 1
+            st.success(f"已合并 {cnt} 条判例到训练集！当前总数: {data_count + cnt}")
+            time.sleep(1); st.rerun()
+
+        st.markdown("#### 2. 启动训练")
+        st.caption("点击下方按钮将把数据上传至 GPU 服务器并开始训练。训练期间服务将中断约 20-30 分钟。")
+
+        # 只有在服务器空闲且有数据时才允许点击
+        btn_disabled = (server_status != "idle") or (data_count == 0)
+        
+        if st.button("🔥 开始微调 (Start LoRA)", type="primary", disabled=btn_disabled):
+            if not PATHS.training_file.exists():
+                st.error("找不到训练数据文件！")
+            else:
+                try:
+                    with open(PATHS.training_file, "rb") as f:
+                        # 发送 POST 请求上传文件
+                        with st.spinner("正在上传数据并启动训练任务..."):
+                            files = {'file': ('tea_feedback.jsonl', f, 'application/json')}
+                            r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=10)
+                            
+                        if r.status_code == 200:
+                            st.balloons()
+                            st.success(f"✅ 任务已提交！服务器响应: {r.json().get('message')}")
+                            st.info("💡 你可以稍后刷新页面查看状态，训练完成后服务会自动恢复。")
+                        else:
+                            st.error(f"❌ 提交失败: {r.text}")
+                except Exception as e:
+                    st.error(f"❌ 连接错误: {e}")
+
+        # 添加手动判例录入 (保持原有功能的折叠框)
+        with st.expander("➕ 手动添加精细判例"):
             with st.form("case_form"):
                 f_txt = st.text_area("判例描述", height=80)
                 f_tag = st.text_input("标签", "人工录入")
@@ -585,20 +648,19 @@ with tab3:
                         sug = st.text_input(f"{f}建议", key=f"a_{i}")
                         input_scores[f] = {"score": val, "comment": cmt, "suggestion": sug}
                 
-                if st.form_submit_button("保存"):
-                    if not embedder: st.error("需 API Key")
-                    else:
-                        new_c = {"text": f_txt, "tags": f_tag, "scores": input_scores}
-                        st.session_state.cases[1].append(new_c)
-                        vec = embedder.encode([f_txt])
-                        st.session_state.cases[0].add(vec)
-                        ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS['case_index'], PATHS['case_data'], is_json=True)
-                        
-                        sys_p = st.session_state.prompt_config['system_template']
-                        ResourceManager.append_to_finetune(f_txt, input_scores, sys_p, st.session_state.prompt_config['user_template'])
-                        
-                        st.success("已保存！")
-                        time.sleep(1); st.rerun()
+                if st.form_submit_button("保存并加入训练集"):
+                    new_c = {"text": f_txt, "tags": f_tag, "scores": input_scores}
+                    st.session_state.cases[1].append(new_c)
+                    vec = embedder.encode([f_txt])
+                    st.session_state.cases[0].add(vec)
+                    ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
+                    
+                    # 同时写入训练文件
+                    ResourceManager.append_to_finetune(f_txt, input_scores, st.session_state.prompt_config['system_template'], st.session_state.prompt_config['user_template'])
+                    
+                    st.success("已保存！")
+                    time.sleep(1); st.rerun()
+
     
 with tab4:
     pc = st.session_state.prompt_config
