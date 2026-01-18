@@ -526,7 +526,7 @@ with tab2:
 # --- Tab 3: 模型调优 ---
 with tab3:
     MANAGER_URL = "http://117.50.89.74:8001"
-    c1, c2 = st.columns([3, 7])
+    c1, c2 = st.columns([7, 3])
     with c1:
         st.subheader("📚 知识库 (RAG)")
         st.caption("上传PDF/文档以增强模型回答的准确性")
@@ -546,6 +546,36 @@ with tab3:
                     st.rerun()
                 else:
                     st.warning("未提取到有效文本")
+
+        st.markdown("---")
+        st.subheader("📚 判例库(CASE)")
+        with st.expander("➕ 手动添加精细判例"):
+            with st.form("case_form"):
+                f_txt = st.text_area("判例描述", height=80)
+                f_tag = st.text_input("标签", "人工录入")
+                st.markdown("**因子评分详情**")
+                fc1, fc2 = st.columns(2)
+                factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
+                input_scores = {}
+                for i, f in enumerate(factors):
+                    with (fc1 if i%2==0 else fc2):
+                        val = st.number_input(f"{f}分数", 0,9,7, key=f"s_{i}")
+                        cmt = st.text_input(f"{f}评语", key=f"c_{i}")
+                        sug = st.text_input(f"{f}建议", key=f"a_{i}")
+                        input_scores[f] = {"score": val, "comment": cmt, "suggestion": sug}
+                
+                if st.form_submit_button("保存并加入训练集"):
+                    new_c = {"text": f_txt, "tags": f_tag, "scores": input_scores}
+                    st.session_state.cases[1].append(new_c)
+                    vec = embedder.encode([f_txt])
+                    st.session_state.cases[0].add(vec)
+                    ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
+                    
+                    # 同时写入训练文件
+                    ResourceManager.append_to_finetune(f_txt, input_scores, st.session_state.prompt_config['system_template'], st.session_state.prompt_config['user_template'])
+                    
+                    st.success("已保存！")
+                    time.sleep(1); st.rerun()
 
     # --- 右侧：微调控制 (核心修改部分) ---
     with c2:
@@ -568,7 +598,7 @@ with tab3:
                 server_status = "error"
         except:
             server_status = "offline"
-
+        # 2. 服务器状态可视化
         if server_status == "idle":
             st.success("🟢 服务器就绪 (正在进行推理服务)")
         elif server_status == "training":
@@ -632,34 +662,7 @@ with tab3:
                 except Exception as e:
                     st.error(f"❌ 连接错误: {e}")
 
-        # 添加手动判例录入 (保持原有功能的折叠框)
-        with st.expander("➕ 手动添加精细判例"):
-            with st.form("case_form"):
-                f_txt = st.text_area("判例描述", height=80)
-                f_tag = st.text_input("标签", "人工录入")
-                st.markdown("**因子评分详情**")
-                fc1, fc2 = st.columns(2)
-                factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
-                input_scores = {}
-                for i, f in enumerate(factors):
-                    with (fc1 if i%2==0 else fc2):
-                        val = st.number_input(f"{f}分数", 0,9,7, key=f"s_{i}")
-                        cmt = st.text_input(f"{f}评语", key=f"c_{i}")
-                        sug = st.text_input(f"{f}建议", key=f"a_{i}")
-                        input_scores[f] = {"score": val, "comment": cmt, "suggestion": sug}
-                
-                if st.form_submit_button("保存并加入训练集"):
-                    new_c = {"text": f_txt, "tags": f_tag, "scores": input_scores}
-                    st.session_state.cases[1].append(new_c)
-                    vec = embedder.encode([f_txt])
-                    st.session_state.cases[0].add(vec)
-                    ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
-                    
-                    # 同时写入训练文件
-                    ResourceManager.append_to_finetune(f_txt, input_scores, st.session_state.prompt_config['system_template'], st.session_state.prompt_config['user_template'])
-                    
-                    st.success("已保存！")
-                    time.sleep(1); st.rerun()
+
 
     
 with tab4:
