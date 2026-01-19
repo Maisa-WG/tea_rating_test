@@ -1374,8 +1374,8 @@ with tab2:
 with tab3:
     st.subheader("📚 知识库 (RAG)")
     st.caption("上传PDF/文档以增强模型回答的准确性。文件将同步到云端。")
-    column1, column2 = st.columns(7,3)
-    with column1:
+    colu1, colu2 = st.columns(7,3)
+    with colu1:
         # ===== 显示GitHub上的RAG文件列表 =====
         st.markdown("**📁 云端上的RAG文件：**")
         
@@ -1499,7 +1499,7 @@ with tab3:
                         st.error("❌ 上传到GitHub失败")
     
     # ===== 重建本地知识库按钮 =====
-    with column2:
+    with colu2:
         st.markdown("**🔧 知识库维护：**")
         local_kb_count = len(st.session_state.kb[1])
         st.caption(f"网页端知识库：{local_kb_count} 个片段")
