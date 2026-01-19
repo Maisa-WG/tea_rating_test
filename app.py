@@ -414,14 +414,36 @@ class GithubSync:
         
         优化策略：
         1. 优先使用 Raw URL（最可靠，适合大文件）
-        2. 备用方案：Git Blob API
-        3. 最后尝试：download_url 或 content.content
+        2. 备用方案：Git Blob API（仅小于1MB的文件）
+        3. 增加完整性验证：对比文件大小
+        4. 支持重试机制
         """
         token, repo_name, branch = GithubSync._get_github_config()
         
         if not token or not repo_name:
             print("[WARN] GitHub config not found, skip pulling RAG")
             return []
+
+        def download_with_retry(url, headers, max_retries=3):
+            """带重试的下载函数"""
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = requests.get(url, headers=headers, timeout=180, stream=True)
+                    if response.status_code == 200:
+                        # 使用 stream=True 分块下载，避免大文件超时
+                        content = b''
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                content += chunk
+                        return content, True
+                    else:
+                        print(f"[WARN]     尝试 {attempt}/{max_retries}: HTTP {response.status_code}")
+                except Exception as e:
+                    print(f"[WARN]     尝试 {attempt}/{max_retries}: {e}")
+                    if attempt < max_retries:
+                        import time
+                        time.sleep(2)  # 等待2秒后重试
+            return None, False
 
         try:
             g = Github(auth=Auth.Token(token))
@@ -437,62 +459,63 @@ class GithubSync:
                 print(f"[INFO] 发现 {len(file_list)} 个文件")
                 
                 for idx, content in enumerate(file_list, 1):
-                    print(f"\n[INFO] [{idx}/{len(file_list)}] 正在处理: {content.name} ({content.size:,} bytes)")
+                    print(f"\n[INFO] [{idx}/{len(file_list)}] 正在处理: {content.name}")
+                    print(f"[INFO]   → 期望大小: {content.size:,} bytes")
                     file_content = None
+                    download_method = None
                     
                     # ===== 方法1：Raw URL（优先，最可靠） =====
-                    try:
-                        raw_url = f"https://raw.githubusercontent.com/{repo_name}/{branch}/{rag_folder}/{content.name}"
-                        print(f"[INFO]   → 尝试 Raw URL...")
-                        headers = {"Authorization": f"Bearer {token}"}
-                        response = requests.get(raw_url, headers=headers, timeout=180)
-                        
-                        if response.status_code == 200:
-                            file_content = response.content
-                            print(f"[INFO]   ✓ 成功 (Raw URL, {len(file_content):,} bytes)")
-                    except Exception as e:
-                        print(f"[WARN]   ✗ Raw URL 失败: {e}")
+                    print(f"[INFO]   → 方法1: Raw URL 下载...")
+                    raw_url = f"https://raw.githubusercontent.com/{repo_name}/{branch}/{rag_folder}/{content.name}"
+                    headers = {"Authorization": f"Bearer {token}"}
+                    file_content, success = download_with_retry(raw_url, headers, max_retries=3)
                     
-                    # ===== 方法2：Git Blob API（备用） =====
-                    if file_content is None and content.sha:
+                    if success and file_content:
+                        download_method = "Raw URL"
+                        print(f"[INFO]   ✓ 下载完成: {len(file_content):,} bytes")
+                    
+                    # ===== 方法2：Git Blob API（仅用于小文件 <1MB） =====
+                    if file_content is None and content.size < 1024 * 1024:  # 1MB
                         try:
-                            print(f"[INFO]   → 尝试 Git Blob API...")
+                            print(f"[INFO]   → 方法2: Git Blob API...")
                             blob = repo.get_git_blob(content.sha)
                             if blob.encoding == "base64":
                                 file_content = base64.b64decode(blob.content)
-                                print(f"[INFO]   ✓ 成功 (Git Blob, {len(file_content):,} bytes)")
+                                download_method = "Git Blob"
+                                print(f"[INFO]   ✓ 下载完成: {len(file_content):,} bytes")
                         except Exception as e:
                             print(f"[WARN]   ✗ Git Blob 失败: {e}")
                     
                     # ===== 方法3：Download URL（兜底） =====
                     if file_content is None and content.download_url:
-                        try:
-                            print(f"[INFO]   → 尝试 Download URL...")
-                            headers = {
-                                "Authorization": f"Bearer {token}",
-                                "Accept": "application/vnd.github.v3.raw"
-                            }
-                            response = requests.get(content.download_url, headers=headers, timeout=180)
-                            if response.status_code == 200:
-                                file_content = response.content
-                                print(f"[INFO]   ✓ 成功 (Download URL, {len(file_content):,} bytes)")
-                        except Exception as e:
-                            print(f"[WARN]   ✗ Download URL 失败: {e}")
+                        print(f"[INFO]   → 方法3: Download URL...")
+                        headers = {
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/vnd.github.v3.raw"
+                        }
+                        file_content, success = download_with_retry(content.download_url, headers, max_retries=3)
+                        if success:
+                            download_method = "Download URL"
+                            print(f"[INFO]   ✓ 下载完成: {len(file_content):,} bytes")
                     
-                    # ===== 方法4：Direct Content（小文件专用） =====
-                    if file_content is None and content.content is not None:
-                        try:
-                            print(f"[INFO]   → 尝试直接读取...")
-                            file_content = base64.b64decode(content.content)
-                            print(f"[INFO]   ✓ 成功 (Direct Content, {len(file_content):,} bytes)")
-                        except Exception as e:
-                            print(f"[WARN]   ✗ Direct Content 失败: {e}")
-                    
+                    # ===== 验证文件完整性 =====
                     if file_content:
-                        files.append((content.name, file_content))
-                        print(f"[INFO]   ✅ {content.name} 已加载")
+                        actual_size = len(file_content)
+                        expected_size = content.size
+                        
+                        print(f"[INFO]   → 验证完整性...")
+                        print(f"[INFO]     期望: {expected_size:,} bytes")
+                        print(f"[INFO]     实际: {actual_size:,} bytes")
+                        
+                        if actual_size == expected_size:
+                            files.append((content.name, file_content))
+                            print(f"[INFO]   ✅ {content.name} 完整性验证通过 (方法: {download_method})")
+                        else:
+                            size_diff = abs(actual_size - expected_size)
+                            print(f"[ERROR]  ❌ {content.name} 大小不匹配 (差异: {size_diff:,} bytes)")
+                            print(f"[ERROR]     文件可能损坏，跳过...")
                     else:
-                        print(f"[ERROR]  ❌ {content.name} 无法加载（所有方法均失败）")
+                        print(f"[ERROR]  ❌ {content.name} 所有下载方法均失败")
                             
             except GithubException as e:
                 if e.status == 404:
@@ -501,7 +524,7 @@ class GithubSync:
                 print(f"[ERROR] GitHub API 异常: {e}")
                 raise e
             
-            print(f"\n[INFO] ========== RAG 拉取完成: {len(files)}/{len(file_list)} 个文件成功 ==========\n")
+            print(f"\n[INFO] ========== RAG 拉取完成: {len(files)}/{len(file_list)} 个文件验证通过 ==========\n")
             return files
 
         except Exception as e:
@@ -634,12 +657,28 @@ def parse_file_bytes(filename: str, content: bytes) -> str:
         # 2. 处理 PDF 文件
         elif filename.lower().endswith('.pdf'):
             try:
-                print(f"[INFO]     → 尝试解析 PDF...")
+                print(f"[INFO]     → 开始解析 PDF...")
+                print(f"[INFO]     → 文件大小: {len(content):,} bytes")
+                
+                # 验证 PDF 文件头
+                if not content.startswith(b'%PDF'):
+                    print(f"[ERROR]    → 不是有效的 PDF 文件（文件头错误）")
+                    print(f"[ERROR]    → 前20字节: {content[:20]}")
+                    return ""
+                
+                # 验证 PDF 文件尾
+                if b'%%EOF' not in content[-1024:]:
+                    print(f"[WARN]     → PDF 文件尾标记缺失，文件可能不完整")
+                    print(f"[WARN]     → 后50字节: {content[-50:]}")
+                
+                # 尝试解析 PDF
                 reader = PdfReader(BytesIO(content))
                 page_count = len(reader.pages)
                 print(f"[INFO]     → PDF 共 {page_count} 页")
                 
                 text = ""
+                failed_pages = []
+                
                 for idx, page in enumerate(reader.pages, 1):
                     try:
                         page_text = page.extract_text()
@@ -648,18 +687,30 @@ def parse_file_bytes(filename: str, content: bytes) -> str:
                             if idx % 10 == 0:  # 每 10 页输出一次进度
                                 print(f"[INFO]     → 已处理 {idx}/{page_count} 页")
                     except Exception as e:
+                        failed_pages.append(idx)
                         print(f"[WARN]     → 第 {idx} 页解析失败: {e}")
                         continue
                 
+                if failed_pages:
+                    print(f"[WARN]     → 共 {len(failed_pages)} 页解析失败: {failed_pages[:10]}{'...' if len(failed_pages) > 10 else ''}")
+                
                 if text.strip():
-                    print(f"[INFO]     → PDF 解析完成: {len(text)} 字符")
+                    print(f"[INFO]     → PDF 解析完成: {len(text):,} 字符 (成功率: {(page_count-len(failed_pages))/page_count*100:.1f}%)")
                     return text
                 else:
                     print(f"[WARN]     → PDF 解析结果为空")
                     return ""
                     
             except Exception as e:
-                print(f"[ERROR]    → PDF 解析失败: {e}")
+                print(f"[ERROR]    ✗ PDF 解析失败: {type(e).__name__}: {e}")
+                
+                # 如果是 EOF 错误，提供更多诊断信息
+                if "EOF" in str(e) or "PdfReadError" in str(type(e).__name__):
+                    print(f"[ERROR]    → 这通常意味着 PDF 文件下载不完整或损坏")
+                    print(f"[ERROR]    → 文件大小: {len(content):,} bytes")
+                    print(f"[ERROR]    → 文件头: {content[:20]}")
+                    print(f"[ERROR]    → 文件尾: {content[-50:] if len(content) > 50 else content}")
+                
                 import traceback
                 traceback.print_exc()
                 return ""
@@ -786,41 +837,46 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         rag_files = GithubSync.pull_rag_folder("tea_data/RAG")
         
         if not rag_files:
-            msg = "GitHub 上没有找到 RAG 文件"
+            msg = "GitHub 上没有找到 RAG 文件，或所有文件下载失败"
             print(f"[WARN] {msg}")
             return False, msg
         
-        print(f"[INFO] 成功拉取 {len(rag_files)} 个文件")
+        print(f"[INFO] 成功拉取并验证 {len(rag_files)} 个文件")
         
         # 2. 解析文件内容
         print("[INFO] 步骤 2/4: 解析文件内容...")
         all_text = ""
         file_names = []
         parse_success = 0
+        parse_failed = []
         
         for fname, fcontent in rag_files:
             file_names.append(fname)
-            print(f"[INFO]   → 解析 {fname} ({len(fcontent):,} bytes)...")
+            print(f"\n[INFO]   → 解析 {fname} ({len(fcontent):,} bytes)...")
             
             parsed_text = parse_file_bytes(fname, fcontent)
-            if parsed_text:
+            if parsed_text and len(parsed_text.strip()) > 100:  # 至少要有100个字符
                 all_text += parsed_text + "\n"
                 parse_success += 1
-                print(f"[INFO]   ✓ 成功提取 {len(parsed_text):,} 字符")
+                print(f"[INFO]   ✅ 成功提取 {len(parsed_text):,} 字符")
             else:
-                print(f"[WARN]   ✗ 无法提取文本内容")
+                parse_failed.append(fname)
+                print(f"[WARN]   ❌ 提取失败或文本过短 ({len(parsed_text) if parsed_text else 0} 字符)")
         
-        print(f"[INFO] 文件解析完成: {parse_success}/{len(rag_files)} 成功")
+        print(f"\n[INFO] 文件解析完成: {parse_success}/{len(rag_files)} 成功")
+        if parse_failed:
+            print(f"[WARN] 解析失败的文件: {', '.join(parse_failed)}")
         
         if not all_text.strip():
-            msg = "无法从 RAG 文件中提取文本"
+            msg = f"无法从 RAG 文件中提取有效文本（共尝试 {len(rag_files)} 个文件）"
             print(f"[ERROR] {msg}")
             return False, msg
         
         # 3. 切片
-        print(f"[INFO] 步骤 3/4: 将文本切片... (总长度: {len(all_text):,} 字符)")
+        print(f"\n[INFO] 步骤 3/4: 将文本切片...")
+        print(f"[INFO]   → 总文本长度: {len(all_text):,} 字符")
         chunks = [all_text[i:i+600] for i in range(0, len(all_text), 500)]
-        print(f"[INFO] 切片完成: {len(chunks)} 个片段")
+        print(f"[INFO]   ✓ 切片完成: {len(chunks)} 个片段")
         
         if not chunks:
             msg = "切片失败"
@@ -828,12 +884,30 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
             return False, msg
         
         # 4. 向量化并构建索引
-        print("[INFO] 步骤 4/4: 向量化并构建 FAISS 索引...")
+        print("\n[INFO] 步骤 4/4: 向量化并构建 FAISS 索引...")
         temp_embedder = AliyunEmbedder(aliyun_key)
         kb_idx = faiss.IndexFlatL2(1024)
         
-        print(f"[INFO]   → 调用阿里云 Embedding API...")
-        vecs = temp_embedder.encode(chunks)
+        print(f"[INFO]   → 调用阿里云 Embedding API (批次大小: 25)...")
+        
+        # 分批向量化，避免 API 限制
+        batch_size = 25
+        all_vecs = []
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i+batch_size]
+            try:
+                vecs = temp_embedder.encode(batch)
+                all_vecs.append(vecs)
+                print(f"[INFO]   → 已处理 {min(i+batch_size, len(chunks))}/{len(chunks)} 片段")
+            except Exception as e:
+                print(f"[WARN]   → 批次 {i}-{i+batch_size} 向量化失败: {e}")
+        
+        if not all_vecs:
+            msg = "向量化失败"
+            print(f"[ERROR] {msg}")
+            return False, msg
+        
+        vecs = np.vstack(all_vecs)
         print(f"[INFO]   ✓ 获得向量: {vecs.shape}")
         
         kb_idx.add(vecs)
@@ -846,8 +920,12 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         ResourceManager.save(kb_idx, chunks, PATHS.kb_index, PATHS.kb_chunks)
         ResourceManager.save_kb_files(file_names)
         
-        msg = f"成功加载 {len(chunks)} 条知识片段，来自 {len(file_names)} 个文件: {', '.join(file_names)}"
-        print(f"[INFO] ✅ {msg}")
+        success_files = [f for f in file_names if f not in parse_failed]
+        msg = f"✅ 成功加载 {len(chunks)} 条知识片段\n📁 来源文件: {', '.join(success_files)}"
+        if parse_failed:
+            msg += f"\n⚠️  解析失败: {', '.join(parse_failed)}"
+        
+        print(f"[INFO] {msg}")
         print("[INFO] ========== RAG 加载完成 ==========\n")
         return True, msg
         
