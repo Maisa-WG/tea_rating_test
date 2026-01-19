@@ -49,12 +49,10 @@ class PathConfig:
     """路径管理类"""
     # 外部资源文件（位于同级目录）
     SRC_SYS_PROMPT = Path("sys_p.txt")
-    # 修改：将 seed_case.json 改为 tea_data/case.json
-    SRC_CASES = Path("tea_data/case.json")  # GitHub上的路径
-
+    SRC_CASES = Path("tea_data/case.json")  # Case文件存储
     # 运行时数据目录
     DATA_DIR = Path("./tea_data")
-    RAG_DIR = Path("./tea_data/RAG")  # 新增：RAG文件存储目录
+    RAG_DIR = Path("./tea_data/RAG")  # RAG文件存储目录
     
     def __init__(self):
         self.DATA_DIR.mkdir(exist_ok=True)
@@ -172,26 +170,6 @@ class ResourceManager:
         except Exception as e:
             print(f"[ERROR] Finetune overwrite failed: {e}")
             return 0
-
-    @staticmethod
-    def append_to_finetune(case_text: str, scores: Dict, sys_prompt: str, user_tpl: str, master_comment: str = "（人工校准）") -> bool:
-        """将单个判例追加到微调数据集"""
-        try:
-            user_content = user_tpl.format(product_desc=case_text, context_text="", case_text="")
-            assistant_content = json.dumps({"master_comment": master_comment, "scores": scores}, ensure_ascii=False)
-            entry = {
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_content},
-                    {"role": "assistant", "content": assistant_content}
-                ]
-            }
-            with open(PATHS.training_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            return True
-        except Exception as e:
-            print(f"[ERROR] Finetune append failed: {e}")
-            return False
 
     @staticmethod
     def save_ft_status(job_id, status, fine_tuned_model=None):
@@ -423,16 +401,6 @@ class GithubSync:
         """
         file_path = f"{rag_folder}/{filename}"
         return GithubSync.delete_file(file_path, f"Delete RAG file: {filename}")
-
-    @staticmethod
-    def sync_rag_folder(current_files: List[str], uploaded_files: List, rag_folder: str = "tea_data/RAG") -> bool:
-        """
-        [已废弃] 原覆盖式同步方法，保留以兼容旧代码
-        建议使用 add_rag_files 和 delete_rag_file 代替
-        """
-        # 现在只执行添加操作，不删除现有文件
-        success, _ = GithubSync.add_rag_files(uploaded_files, rag_folder)
-        return success
 
     @staticmethod
     def sync_cases(cases: List[Dict], file_path: str = "tea_data/case.json") -> bool:
@@ -856,7 +824,6 @@ def bootstrap_seed_cases(embedder: AliyunEmbedder):
         st.session_state.cases = (case_idx, case_data)
         ResourceManager.save(case_idx, case_data, PATHS.case_index, PATHS.case_data, is_json=True)
 
-
 def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
     """
     从 GitHub 加载 RAG 文件
@@ -1269,12 +1236,12 @@ with st.sidebar:
     
     st.markdown(f"知识库: **{kb_count}** 条 | 判例库: **{case_count}** 条")
     if kb_files:
-        st.caption(f"RAG文件: {', '.join(kb_files)}")
+        pass
     elif kb_count == 0:
-        st.caption("⚠️ 知识库为空，请上传文件或从 GitHub 加载")
+        st.caption("⚠️ 知识库为空，请上传文件或从从云端加载")
     
     st.caption("快速上传仅支持.zip文件格式。")
-    st.caption("少量文件上传请至\"模型调优\"板块。")
+    st.caption("少量文件上传请至\"知识库设计\"板块。")
     
     if st.button("📤 导出数据"):
         import zipfile, shutil
@@ -1302,7 +1269,7 @@ with st.sidebar:
 st.markdown('<div class="main-title">🍵 茶品六因子 AI 评分器 Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="slogan">"一片叶子落入水中，改变了水的味道..."</div>', unsafe_allow_html=True)
 
-tab1, tab2, tab3, tab4 = st.tabs(["💡 交互评分", "🚀 批量评分", "🛠️ 模型调优", "📲 提示词（Prompt）配置"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["💡 交互评分", "🚀 批量评分", "📕 知识库设计", "🛠️ 判例库与微调", "📲 提示词（Prompt）配置"])
 
 # --- Tab 1: 交互评分 ---
 with tab1:
@@ -1380,9 +1347,7 @@ with tab1:
             st.session_state.cases[1].append(nc)
             st.session_state.cases[0].add(embedder.encode([user_input]))
             ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
-            ResourceManager.append_to_finetune(user_input, cal_scores, st.session_state.prompt_config['system_template'], st.session_state.prompt_config['user_template'], cal_master)
-            
-            # 同步到GitHub
+       
             with st.spinner("同步判例到GitHub..."):
                 GithubSync.sync_cases(st.session_state.cases[1])
             
@@ -1405,17 +1370,13 @@ with tab2:
         st.success("完成")
         st.download_button("下载Word", create_word_report(res), "report.docx")
 
-# --- Tab 3: 模型调优 ---
+# --- Tab 3: RAG ---
 with tab3:
-    MANAGER_URL = "http://117.50.89.74:8001"
-    c1, c2 = st.columns([6, 4])
-    
-    with c1:
         st.subheader("📚 知识库 (RAG)")
-        st.caption("上传PDF/文档以增强模型回答的准确性。文件将同步到GitHub。")
+        st.caption("上传PDF/文档以增强模型回答的准确性。文件将同步到云端。")
         
         # ===== 显示GitHub上的RAG文件列表 =====
-        st.markdown("**📁 GitHub上的RAG文件：**")
+        st.markdown("**📁 云端上的RAG文件：**")
         
         # 获取GitHub上的文件列表
         if 'github_rag_files' not in st.session_state:
@@ -1483,7 +1444,7 @@ with tab3:
                             st.success(f"✅ 已删除 {len(deleted)} 个文件")
                             
                             # 提示需要重建知识库
-                            st.info("💡 文件已从GitHub删除。如需更新本地知识库，请点击下方的'重建本地知识库'按钮。")
+                            st.info("💡 文件已从云端删除。如需更新本地知识库，请点击下方的'重建本地知识库'按钮。")
                             time.sleep(1)
                             st.rerun()
                 with del_col2:
@@ -1542,8 +1503,8 @@ with tab3:
         local_kb_count = len(st.session_state.kb[1])
         st.caption(f"本地知识库：{local_kb_count} 个片段")
         
-        if st.button("🔄 从GitHub重建本地知识库", use_container_width=True):
-            with st.spinner("正在从GitHub拉取并重建知识库..."):
+        if st.button("🔄 从云端加载知识库", use_container_width=True, type="primary"):
+            with st.spinner("正在从云端拉取并重建知识库..."):
                 success, msg = load_rag_from_github(aliyun_key)
                 if success:
                     st.success(msg)
@@ -1553,11 +1514,15 @@ with tab3:
                     st.error(msg)
             time.sleep(1)
             st.rerun()
+
         
-        st.divider()
-        st.subheader("📕 判例库 (CASE)")
         
-        # ===== 新增：展示当前判例按钮 =====
+with tab4:
+    MANAGER_URL = "http://117.50.89.74:8001"
+    c1, c2 = st.columns([6, 4])
+    
+    with c1:
+        st.subheader("📕 判例库 (CASE)")        
         if st.button("📋 展示当前判例", use_container_width=True):
             show_cases_dialog(embedder)
         
@@ -1666,7 +1631,7 @@ with tab3:
                     st.error(f"❌ 连接错误: {e}")
 
 # --- Tab 4: Prompt配置 ---
-with tab4:
+with tab5:
     pc = st.session_state.prompt_config
     st.markdown("系统提示词**可以修改**。完整全面的提示词会让大语言模型返回的更准确结果。")    
     sys_t = st.text_area("系统提示词", pc.get('system_template',''), height=350)
@@ -1679,7 +1644,7 @@ with tab4:
         else:
             new_cfg = {"system_template": sys_t, "user_template": user_t}
             
-            with st.spinner("正在连接 Github 仓库并写入数据..."):
+            with st.spinner("正在连接云端仓库并写入数据..."):
                 success = GithubSync.push_json(
                     file_path_in_repo="tea_data/prompts.json", 
                     data_dict=new_cfg,
@@ -1687,7 +1652,8 @@ with tab4:
                 )
             
             if success:
-                st.success("✅ 成功写入 Github！")
+                st.success("✅ 成功写入云端！")
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
