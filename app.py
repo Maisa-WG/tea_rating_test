@@ -754,7 +754,6 @@ def edit_case_dialog(case_idx: int, embedder: AliyunEmbedder):
 # ==========================================
 # [SECTION 4] 主程序逻辑
 # ==========================================
-
 # A. 初始化 Session
 if 'loaded' not in st.session_state:
     # 1. 加载RAG与判例数据
@@ -764,7 +763,50 @@ if 'loaded' not in st.session_state:
     st.session_state.cases = (case_idx, case_data)
     st.session_state.kb_files = ResourceManager.load_kb_files()  # 加载RAG文件列表
     
-    # 2. 加载 Prompt 配置
+    # 2. 如果本地RAG为空，尝试从GitHub拉取
+    if len(kb_data) == 0:
+        try:
+            rag_files = GithubSync.pull_rag_folder("tea_data/RAG")
+            if rag_files:
+                # 解析所有文件内容
+                all_text = ""
+                file_names = []
+                for fname, fcontent in rag_files:
+                    file_names.append(fname)
+                    try:
+                        if fname.endswith('.txt'):
+                            all_text += fcontent.decode('utf-8') + "\n"
+                        elif fname.endswith('.pdf'):
+                            from PyPDF2 import PdfReader
+                            from io import BytesIO
+                            reader = PdfReader(BytesIO(fcontent))
+                            all_text += "".join([p.extract_text() or "" for p in reader.pages]) + "\n"
+                        elif fname.endswith('.docx'):
+                            from docx import Document
+                            from io import BytesIO
+                            doc = Document(BytesIO(fcontent))
+                            all_text += "\n".join([p.text for p in doc.paragraphs]) + "\n"
+                    except Exception as e:
+                        print(f"[WARN] Failed to parse {fname}: {e}")
+                
+                # 切片并构建索引
+                if all_text.strip():
+                    chunks = [all_text[i:i+600] for i in range(0, len(all_text), 500)]
+                    # 注意：这里需要临时创建embedder，因为此时还没有初始化
+                    temp_aliyun_key = os.getenv("ALIYUN_API_KEY") or st.secrets.get("ALIYUN_API_KEY", "")
+                    if temp_aliyun_key:
+                        temp_embedder = AliyunEmbedder(temp_aliyun_key)
+                        kb_idx = faiss.IndexFlatL2(1024)
+                        kb_idx.add(temp_embedder.encode(chunks))
+                        st.session_state.kb = (kb_idx, chunks)
+                        st.session_state.kb_files = file_names
+                        # 保存到本地缓存
+                        ResourceManager.save(kb_idx, chunks, PATHS.kb_index, PATHS.kb_chunks)
+                        ResourceManager.save_kb_files(file_names)
+        except Exception as e:
+            print(f"[WARN] Auto-load RAG from GitHub failed: {e}")
+    
+    # 3. 加载 Prompt 配置
     if PATHS.prompt_config_file.exists():
         try:
             with open(PATHS.prompt_config_file, 'r', encoding='utf-8') as f:
@@ -779,6 +821,7 @@ if 'loaded' not in st.session_state:
         }
     
     st.session_state.loaded = True
+
 
 # B. 侧边栏
 with st.sidebar:
@@ -1125,4 +1168,5 @@ with tab4:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
