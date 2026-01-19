@@ -1505,7 +1505,7 @@ with tab3:
         st.caption(f"网页端知识库：{local_kb_count} 个片段")
         files_str = "\n ".join(kb_files)
         st.markdown(f"网页端知识库文件:\n {files_str}") 
-        st.sidebar()
+        st.markdown("---")
         st.markdown("云端数据与网页数据不统一？")
         if st.button("🔄 从云端加载知识库", use_container_width=True, type="primary"):
             with st.spinner("正在从云端拉取并重建知识库..."):
