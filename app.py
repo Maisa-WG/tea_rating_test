@@ -263,6 +263,34 @@ class GithubSync:
         except Exception as e:
             st.error(f"Github 同步失败: {str(e)}")
             return False
+        @staticmethod
+        def load_json(file_path_in_repo: str, default=None):
+            """从 Github 读取 JSON 文件并返回 dict/list；不存在则返回 default"""
+            if default is None:
+                default = []
+    
+            g, repo_name, branch = GithubSync._get_github_client()
+            if not g or not repo_name:
+                return default
+    
+            try:
+                repo = g.get_repo(repo_name)
+                contents = repo.get_contents(file_path_in_repo, ref=branch)
+    
+                # PyGithub: contents.decoded_content 是 bytes
+                raw = contents.decoded_content.decode("utf-8")
+                return json.loads(raw) if raw.strip() else default
+    
+            except GithubException as e:
+                # 404 = 远端文件不存在：返回空
+                if getattr(e, "status", None) == 404:
+                    return default
+                st.error(f"Github 读取失败: {str(e)}")
+                return default
+    
+            except Exception as e:
+                st.error(f"Github 读取失败: {str(e)}")
+                return default
 
     @staticmethod
     def push_binary_file(file_path_in_repo: str, file_content: bytes, commit_msg: str = "Upload file") -> bool:
@@ -536,7 +564,7 @@ class GithubSync:
 
 # --- [新增] 日志与评测管理类 ---
 class EvaluationLogger:
-    FILE_NAME = "eval_logs.json"
+    FILE_NAME = "tea_data/eval_logs.json"
 
     @staticmethod
     def load_logs():
@@ -660,24 +688,30 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
         hits = [kb_res[1][i] for i in idx[0] if i < len(kb_res[1])]
         ctx_txt = "\n".join([f"- {h[:200]}..." for h in hits])
 
-    case_txt, found_cases = "（无相似判例）", []
-    if case_res[0].ntotal > 0:
-        _, idx = case_res[0].search(vec, c_num)
-        for i in idx[0]:
-            if i < len(case_res[1]) and i >= 0:
-                c = case_res[1][i]
-                found_cases.append(c)
-                
-                # 将该条 JSON 里的所有评分维度和评语都提取出来
-                score_details = []
-                for factor, info in c.get('scores', {}).items():
-                    if isinstance(info, dict):
-                        score_details.append(f"{factor}: {info.get('score')}分 (理由: {info.get('comment', '无')})")
-                
-                scores_str = " | ".join(score_details)
-                
-                # 构造一个更丰满的参考案例字符串
-                case_txt += f"\n---\n【参考判例文本】: {c['text']}\n【参考评分逻辑】: {scores_str}\n"
+        case_txt, found_cases = "", []
+        if case_res[0].ntotal > 0:
+            _, idx = case_res[0].search(vec, c_num)
+            for i in idx[0]:
+                if i < len(case_res[1]) and i >= 0:
+                    c = case_res[1][i]
+                    found_cases.append(c)
+    
+                    score_details = []
+                    for factor, info in c.get('scores', {}).items():
+                        if isinstance(info, dict):
+                            score_details.append(
+                                f"{factor}: {info.get('score')}分 (理由: {info.get('comment', '无')})"
+                            )
+                    scores_str = " | ".join(score_details)
+    
+                    case_txt += (
+                        f"\n---\n"
+                        f"【参考判例文本】: {c.get('text','')}\n"
+                        f"【参考评分逻辑】: {scores_str}\n"
+                    )
+    
+        if not found_cases:
+            case_txt = "（无相似判例）"
 
     sys_p = prompt_cfg.get('system_template', "")
     user_p = prompt_cfg.get('user_template', "").format(product_desc=text, context_text=ctx_txt, case_text=case_txt)
@@ -1358,6 +1392,7 @@ with tab1:
         else:
             with st.spinner(f"正在使用 {model_id} 品鉴..."):
                 user_input = llm_normalize_user_input(user_input, client_d)
+                st.session_state.current_user_input = user_input
                 scores, kb_h, case_h = run_scoring(user_input, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen2.5-7B-Instruct", r_num, c_num)
                 if scores:
                     st.session_state.last_scores = scores
@@ -1413,7 +1448,8 @@ with tab1:
 
             with st.spinner("同步数据到云端记忆模块..."):
                 # 1. 存入判例库 (原有逻辑)
-                nc = {"text": user_input, "scores": cal_scores, "tags": "交互-校准", "master_comment": cal_master, "created_at": time.strftime("%Y-%m-%d")}
+                st.session_state.get("current_user_input", user_input)
+                nc = {"text": current_user_input, "scores": cal_scores, "tags": "交互-校准", "master_comment": cal_master, "created_at": time.strftime("%Y-%m-%d")}
                 st.session_state.cases[1].append(nc)
                 st.session_state.cases[0].add(embedder.encode([user_input]))
                 ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
@@ -1421,7 +1457,7 @@ with tab1:
                 
                 # 2. 存入评测日志 (新增逻辑：LLM-as-a-judge 的原料)
                 EvaluationLogger.log_evaluation(
-                    text=user_input, 
+                    text= current_user_input, 
                     model_output=ai_package, 
                     expert_output=expert_package
                 )
@@ -1743,6 +1779,7 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
 
 
