@@ -1399,7 +1399,7 @@ with st.sidebar:
 st.markdown('<div class="main-title">🍵 茶品六因子 AI 评分器 Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="slogan">"一片叶子落入水中，改变了水的味道..."</div>', unsafe_allow_html=True)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["💡 交互评分", "🚀 批量评分", "📕 知识库设计", "🛠️ 判例库与微调", "📲 提示词（Prompt）配置"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["💡 交互评分", "🚀 批量评分", "📕 知识库设计", "🛠️ 判例库与微调", "📲 提示词（Prompt）配置","测试日志"])
 
 # --- Tab 1: 交互评分 ---
 with tab1:
@@ -1926,6 +1926,7 @@ with tab6:
                             st.rerun()
                 else:
                     st.info(l["analysis"])
+
 
 
 
