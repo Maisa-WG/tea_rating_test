@@ -1435,20 +1435,20 @@ with tab1:
             st.caption(" | ".join([f"{k}:{v.get('score')}" for k,v in (c.get('scores') or {}).items()]))
     else:
         st.warning("Debug: 未命中任何判例（case_h 为空）")
+
+    left_col, right_col = st.columns([35, 65]) 
+    with left_col:
+        st.subheader("📊 风味形态")
+        st.pyplot(plot_flavor_shape(st.session_state.last_scores), use_container_width=True)
+    with right_col:
+        cols = st.columns(2)
+        factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
+        for i, f in enumerate(factors):
+            if f in s:
+                d = s[f]
+                with cols[i%2]:
+                    st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{f}</span><span>{d['score']}/9</span></div><div>{d['comment']}</div><div class="advice-tag">💡 {d.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
     
-        left_col, right_col = st.columns([35, 65]) 
-        with left_col:
-            st.subheader("📊 风味形态")
-            st.pyplot(plot_flavor_shape(st.session_state.last_scores), use_container_width=True)
-        with right_col:
-            cols = st.columns(2)
-            factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
-            for i, f in enumerate(factors):
-                if f in s:
-                    d = s[f]
-                    with cols[i%2]:
-                        st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{f}</span><span>{d['score']}/9</span></div><div>{d['comment']}</div><div class="advice-tag">💡 {d.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
-        
     st.subheader("🛠️ 评分校准与修正")
     v = st.session_state.score_version  # 获取当前版本号
     mc = st.session_state.get("last_master_comment", "")
@@ -1942,6 +1942,7 @@ with tab6:
     
     
     
+
 
 
 
