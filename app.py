@@ -1286,6 +1286,10 @@ with tab1:
         st.session_state.last_scores = None
         st.session_state.last_master_comment = ""
     
+    # 用于生成动态key，确保每次新评分时校准输入框显示新内容
+    if 'score_version' not in st.session_state:
+        st.session_state.score_version = 0
+    
     if st.button("开始评分", type="primary", use_container_width=True):
         if not user_input: st.warning("请输入内容")
         else:
@@ -1296,12 +1300,8 @@ with tab1:
                     st.session_state.last_scores = scores
                     st.session_state.last_master_comment = scores.get("master_comment", "")
                     
-                    # 清除校准输入框的缓存状态，确保显示新结果
-                    factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
-                    for f in factors:
-                        for key in [f"s_{f}", f"c_{f}", f"sg_{f}"]:
-                            if key in st.session_state:
-                                del st.session_state[key]
+                    # 递增版本号，使校准输入框使用新的key，从而显示新的默认值
+                    st.session_state.score_version += 1
                     st.rerun()
     
     if st.session_state.last_scores:
@@ -1323,7 +1323,8 @@ with tab1:
                         st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{f}</span><span>{d['score']}/9</span></div><div>{d['comment']}</div><div class="advice-tag">💡 {d.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
         
         st.subheader("🛠️ 评分校准与修正")
-        cal_master = st.text_area("校准总评", mc)
+        v = st.session_state.score_version  # 获取当前版本号
+        cal_master = st.text_area("校准总评", mc, key=f"cal_master_{v}")
         cal_scores = {}
         st.write("分项调整")
         active_factors = [f for f in factors if f in s]
@@ -1335,11 +1336,11 @@ with tab1:
                     with t_col:
                         st.markdown(f"<div style='padding-top: 5px;'><b>📌 {f}</b></div>", unsafe_allow_html=True)
                     with s_col:
-                        new_score = st.number_input("分数", 0, 9, int(s[f]['score']), 1, key=f"s_{f}", label_visibility="collapsed")
+                        new_score = st.number_input("分数", 0, 9, int(s[f]['score']), 1, key=f"s_{f}_{v}", label_visibility="collapsed")
                     cal_scores[f] = {
                         "score": new_score,
-                        "comment": st.text_area(f"评语", s[f]['comment'], key=f"c_{f}", height=80, placeholder="评语"),
-                        "suggestion": st.text_area(f"建议", s[f].get('suggestion',''), key=f"sg_{f}", height=68, placeholder="建议")
+                        "comment": st.text_area(f"评语", s[f]['comment'], key=f"c_{f}_{v}", height=80, placeholder="评语"),
+                        "suggestion": st.text_area(f"建议", s[f].get('suggestion',''), key=f"sg_{f}_{v}", height=68, placeholder="建议")
                     }
         
         if st.button("💾 保存校准评分", type="primary"):
@@ -1503,8 +1504,14 @@ with tab3:
         st.markdown("**🔧 知识库维护：**")
         local_kb_count = len(st.session_state.kb[1])
         st.caption(f"网页端知识库：{local_kb_count} 个片段")
-        files_str = "\n ".join(kb_files)
-        st.markdown(f"网页端知识库文件:\n {files_str}") 
+        
+        # 每个文件换行显示
+        if kb_files:
+            st.markdown("**网页端知识库文件:**")
+            for fname in kb_files:
+                st.markdown(f"- 📄 {fname}")
+        else:
+            st.markdown("**网页端知识库文件:** 无") 
         st.markdown("---")
         st.markdown("云端数据与网页数据不统一？")
         if st.button("🔄 从云端加载知识库", use_container_width=True, type="primary"):
@@ -1523,7 +1530,7 @@ with tab3:
     
 with tab4:
     MANAGER_URL = "http://117.50.89.74:8001"
-    c1, c2 = st.columns([3, 7])
+    c1, c2 = st.columns([5, 5])
     
     with c1:
         st.subheader("📕 判例库 (CASE)")        
