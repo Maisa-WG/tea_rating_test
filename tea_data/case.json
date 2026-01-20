@@ -2518,5 +2518,43 @@
         "suggestion": "让苦更快化。"
       }
     }
+  },
+  {
+    "text": "茶汤呈现彩虹色，喝起来像汽油。",
+    "scores": {
+      "优雅性": {
+        "score": 9,
+        "comment": "这是神仙喝的汽油",
+        "suggestion": ""
+      },
+      "辨识度": {
+        "score": 9,
+        "comment": "这是神仙喝的汽油",
+        "suggestion": ""
+      },
+      "协调性": {
+        "score": 9,
+        "comment": "这是神仙喝的汽油",
+        "suggestion": ""
+      },
+      "饱和度": {
+        "score": 9,
+        "comment": "这是神仙喝的汽油",
+        "suggestion": ""
+      },
+      "持久性": {
+        "score": 9,
+        "comment": "这是神仙喝的汽油",
+        "suggestion": ""
+      },
+      "苦涩度": {
+        "score": 9,
+        "comment": "这是神仙喝的汽油",
+        "suggestion": ""
+      }
+    },
+    "tags": "交互-校准",
+    "master_comment": "这是神仙喝的汽油",
+    "created_at": "2026-01-20"
   }
 ]
