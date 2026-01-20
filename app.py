@@ -741,6 +741,8 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
     """执行 RAG 检索与 LLM 评分"""
     vec = embedder.encode([text]).astype("float32")
     faiss.normalize_L2(vec)
+    # Debug：norm 应该约等于 1.0；如果不是，embedding 或 normalize 有问题
+    print(f"[DEBUG] query_vec_norm={float(np.linalg.norm(vec[0])):.6f}")
 
     # --- KB ---
     ctx_txt, hits = "（无手册资料）", []
@@ -2018,6 +2020,7 @@ with tab6:
     
     
     
+
 
 
 
