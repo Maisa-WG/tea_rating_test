@@ -739,8 +739,9 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
 
                 case_txt += (
                     f"\n---\n"
-                    f"【参考判例文本】: {c.get('text','')}\n"
-                    f"【参考评分逻辑】: {scores_str}\n"
+                    f"【相似判例】: {c.get('text','')}\n"
+                    f"【该判例专家分】{scores_str}\n"
+                    f"【硬约束】如果待评分文本与该判例高度一致（语义基本相同），六因子分数应优先对齐该判例的专家分；只有明确出现相反描述时才允许偏离，并必须在comment里解释偏离原因。\n"
                 )
 
     if not found_cases:
@@ -1427,6 +1428,15 @@ with tab1:
                 user_input = llm_normalize_user_input(user_input, client_d)
                 st.session_state.current_user_input = user_input
                 scores, kb_h, case_h = run_scoring(user_input, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen2.5-7B-Instruct", r_num, c_num)
+                # ✅ Debug: 展示命中的判例（确认是否命中了那条全9分）
+                if case_h:
+                    st.subheader("🔍 Debug: 命中的判例（Top-K）")
+                    for j, c in enumerate(case_h[:c_num], start=1):
+                        st.markdown(f"**#{j}** {c.get('text','')[:80]}...")
+                        st.caption(" | ".join([f"{k}:{v.get('score')}" for k,v in (c.get('scores') or {}).items()]))
+                else:
+                    st.warning("Debug: 未命中任何判例（case_h 为空）")
+
                 if scores:
                     st.session_state.last_scores = scores
                     st.session_state.last_master_comment = scores.get("master_comment", "")
@@ -1481,9 +1491,12 @@ with tab1:
 
             with st.spinner("同步数据到云端记忆模块..."):
                 # 1. 存入判例库 (原有逻辑)
-                nc = {"text": st.session_state.get("current_user_input", user_input), "scores": cal_scores, "tags": "交互-校准", "master_comment": cal_master, "created_at": time.strftime("%Y-%m-%d")}
+                nc_text = st.session_state.get("current_user_input", user_input)
+                nc = {"text": nc_text, "scores": cal_scores, "tags": "交互-校准", "master_comment": cal_master, "created_at": time.strftime("%Y-%m-%d")}
                 st.session_state.cases[1].append(nc)
-                st.session_state.cases[0].add(embedder.encode([user_input]))
+                
+                # ✅ embedding 与 nc["text"] 完全一致
+                st.session_state.cases[0].add(embedder.encode([nc_text]))
                 ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
                 GithubSync.sync_cases(st.session_state.cases[1])
                 
@@ -1926,6 +1939,7 @@ with tab6:
                             st.rerun()
                 else:
                     st.info(l["analysis"])
+
 
 
 
