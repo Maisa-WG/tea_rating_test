@@ -1196,6 +1196,18 @@ if 'loaded' not in st.session_state:
     print("[INFO] 步骤 1/3: 加载本地缓存数据...")
     kb_idx, kb_data = ResourceManager.load(PATHS.kb_index, PATHS.kb_chunks)
     case_idx, case_data = ResourceManager.load(PATHS.case_index, PATHS.case_data, is_json=True)
+    # ✅ 自愈：case 向量索引与 case_data 不一致时自动重建
+    case_idx, case_data = st.session_state.cases
+    if case_data and (case_idx.ntotal != len(case_data)):
+        print(f"[WARN] case index mismatch: index={case_idx.ntotal}, data={len(case_data)}. Rebuilding...")
+        new_idx = faiss.IndexFlatL2(1024)
+        texts = [c.get("text", "") for c in case_data]
+        vecs = embedder.encode(texts)
+        if len(vecs) > 0:
+            new_idx.add(vecs)
+        st.session_state.cases = (new_idx, case_data)
+        ResourceManager.save(new_idx, case_data, PATHS.case_index, PATHS.case_data, is_json=True)
+
     st.session_state.kb = (kb_idx, kb_data)
     st.session_state.cases = (case_idx, case_data)
     st.session_state.kb_files = ResourceManager.load_kb_files()
@@ -1427,6 +1439,7 @@ with tab1:
             
 
     # ✅ Debug: 展示本次命中的判例（rerun 后仍可见）
+    st.caption(f"case_data 条数 = {len(st.session_state.cases[1])} | case_index.ntotal = {st.session_state.cases[0].ntotal}")
     case_h = st.session_state.get("last_case_hits", [])
     st.subheader("🔍 Debug: 命中的判例（Top-K）")
     if case_h:
@@ -1435,7 +1448,9 @@ with tab1:
             st.caption(" | ".join([f"{k}:{v.get('score')}" for k,v in (c.get('scores') or {}).items()]))
     else:
         st.warning("Debug: 未命中任何判例（case_h 为空）")
-
+    s = (st.session_state.last_scores or {}).get("scores", {}) or {}
+    mc = st.session_state.get("last_master_comment", "")
+    factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
     left_col, right_col = st.columns([35, 65]) 
     with left_col:
         st.subheader("📊 风味形态")
@@ -1942,6 +1957,7 @@ with tab6:
     
     
     
+
 
 
 
