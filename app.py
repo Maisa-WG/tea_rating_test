@@ -952,14 +952,14 @@ def show_cases_dialog(embedder: AliyunEmbedder):
         return
     
     st.write(f"共 **{len(cases)}** 条判例")
-    
-    # 用于追踪需要删除的判例索引
-    if 'cases_to_delete' not in st.session_state:
-        st.session_state.cases_to_delete = set()
+    st.caption("💡 勾选要删除的判例，然后点击底部的确认按钮")
     
     # 用于追踪编辑状态
     if 'editing_case_idx' not in st.session_state:
         st.session_state.editing_case_idx = None
+    
+    # 使用checkbox收集要删除的判例（不会触发rerun导致弹窗关闭）
+    selected_to_delete = []
     
     for idx, case in enumerate(cases):
         with st.container(border=True):
@@ -982,41 +982,34 @@ def show_cases_dialog(embedder: AliyunEmbedder):
                     st.rerun()
             
             with col3:
-                if st.button("🗑️", key=f"del_{idx}", help="删除此判例"):
-                    st.session_state.cases_to_delete.add(idx)
-                    st.rerun()
+                # 使用checkbox代替button，避免rerun导致弹窗关闭
+                if st.checkbox("删除", key=f"del_check_{idx}", label_visibility="collapsed"):
+                    selected_to_delete.append(idx)
     
-    # 如果有待删除的判例
-    if st.session_state.cases_to_delete:
-        st.warning(f"将删除 {len(st.session_state.cases_to_delete)} 条判例")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ 确认删除并同步", type="primary"):
-                # 执行删除
-                new_cases = [c for i, c in enumerate(cases) if i not in st.session_state.cases_to_delete]
-                
-                # 重建FAISS索引
-                new_idx = faiss.IndexFlatL2(1024)
-                if new_cases:
-                    texts = [c["text"] for c in new_cases]
-                    vecs = embedder.encode(texts)
-                    new_idx.add(vecs)
-                
-                st.session_state.cases = (new_idx, new_cases)
-                ResourceManager.save(new_idx, new_cases, PATHS.case_index, PATHS.case_data, is_json=True)
-                
-                # 同步到GitHub
-                with st.spinner("同步到GitHub..."):
-                    GithubSync.sync_cases(new_cases)
-                
-                st.session_state.cases_to_delete = set()
-                st.success("删除完成！")
-                time.sleep(1)
-                st.rerun()
-        with col2:
-            if st.button("❌ 取消"):
-                st.session_state.cases_to_delete = set()
-                st.rerun()
+    # 如果有选中要删除的判例
+    if selected_to_delete:
+        st.warning(f"⚠️ 已选中 {len(selected_to_delete)} 条判例待删除")
+        if st.button("✅ 确认删除并同步", type="primary", use_container_width=True):
+            # 执行删除
+            new_cases = [c for i, c in enumerate(cases) if i not in selected_to_delete]
+            
+            # 重建FAISS索引
+            new_idx = faiss.IndexFlatL2(1024)
+            if new_cases:
+                texts = [c["text"] for c in new_cases]
+                vecs = embedder.encode(texts)
+                new_idx.add(vecs)
+            
+            st.session_state.cases = (new_idx, new_cases)
+            ResourceManager.save(new_idx, new_cases, PATHS.case_index, PATHS.case_data, is_json=True)
+            
+            # 同步到GitHub
+            with st.spinner("同步到GitHub..."):
+                GithubSync.sync_cases(new_cases)
+            
+            st.success("删除完成！")
+            time.sleep(1)
+            st.rerun()
 
 
 @st.dialog("✏️ 编辑判例", width="large")
@@ -1163,7 +1156,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(f"**预处理模型：** `Deepseek-chat`")
     st.markdown(f"**评分模型：** `Qwen2.5-7B-Instruct`")
-    model_id = "Qwen2.5-7B-Instruct"  # 默认
+    model_id = "Qwen2.5-7B-Instruct"
     try:
         resp = requests.get("http://117.50.89.74:8001/status", timeout=2)
         if resp.status_code == 200 and resp.json().get("lora_available"):
@@ -1673,5 +1666,4 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
-
 
