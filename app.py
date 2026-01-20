@@ -141,7 +141,7 @@ class ResourceManager:
                     data = json.load(f) if is_json else pickle.load(f)
                 return index, data
             except: pass
-        return faiss.IndexFlatL2(1024), []
+        return faiss.IndexFlatIP(1024), []
 
     # ===== 微调相关方法 =====
     @staticmethod
@@ -638,6 +638,50 @@ class AliyunEmbedder:
         except: pass
         return np.zeros((len(texts), 1024), dtype="float32")
 
+
+def _ensure_ip_index_from_texts(texts, embedder):
+    """Build an IndexFlatIP (cosine via L2-normalized vectors) from texts."""
+    if not texts:
+        return faiss.IndexFlatIP(1024)
+    vecs = embedder.encode(texts).astype("float32")
+    # normalize for cosine similarity
+    faiss.normalize_L2(vecs)
+    dim = vecs.shape[1] if vecs.ndim == 2 and vecs.shape[0] > 0 else 1024
+    idx = faiss.IndexFlatIP(dim)
+    if vecs.shape[0] > 0:
+        idx.add(vecs)
+    return idx
+
+def ensure_case_index_cosine(embedder):
+    """Migrate / rebuild case index to cosine (IP + normalized vectors) if needed."""
+    case_idx, case_data = st.session_state.get("cases", (faiss.IndexFlatIP(1024), []))
+    # If empty, nothing to do
+    if not case_data:
+        st.session_state.cases = (faiss.IndexFlatIP(1024), case_data)
+        return
+
+    # If metric not IP or ntotal mismatch, rebuild
+    metric = getattr(case_idx, "metric_type", None)
+    if metric != faiss.METRIC_INNER_PRODUCT or case_idx.ntotal != len(case_data):
+        texts = [c.get("text", "") for c in case_data]
+        new_idx = _ensure_ip_index_from_texts(texts, embedder)
+        st.session_state.cases = (new_idx, case_data)
+        ResourceManager.save(new_idx, case_data, PATHS.case_index, PATHS.case_data, is_json=True)
+
+def ensure_kb_index_cosine(embedder):
+    """Migrate / rebuild kb index to cosine (IP + normalized vectors) if needed."""
+    kb_idx, kb_chunks = st.session_state.get("kb", (faiss.IndexFlatIP(1024), []))
+    if not kb_chunks:
+        st.session_state.kb = (faiss.IndexFlatIP(1024), kb_chunks)
+        return
+
+    metric = getattr(kb_idx, "metric_type", None)
+    if metric != faiss.METRIC_INNER_PRODUCT or kb_idx.ntotal != len(kb_chunks):
+        new_idx = _ensure_ip_index_from_texts(kb_chunks, embedder)
+        st.session_state.kb = (new_idx, kb_chunks)
+        ResourceManager.save(new_idx, kb_chunks, PATHS.kb_index, PATHS.kb_chunks)
+
+
 def llm_normalize_user_input(raw_query: str, client: OpenAI) -> str:
     """使用 LLM 对用户输入做语义规范化 / 去噪"""
     system_prompt = (
@@ -679,7 +723,8 @@ def llm_normalize_user_input(raw_query: str, client: OpenAI) -> str:
 
 def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, embedder: AliyunEmbedder, client: OpenAI, model_id: str, k_num: int, c_num: int):
     """执行 RAG 检索与 LLM 评分"""
-    vec = embedder.encode([text])
+    vec = embedder.encode([text]).astype("float32")
+    faiss.normalize_L2(vec)
 
     # --- KB ---
     ctx_txt, hits = "（无手册资料）", []
@@ -916,8 +961,9 @@ def bootstrap_seed_cases(embedder: AliyunEmbedder):
 
     texts = [c["text"] for c in seed_cases]
     vecs = embedder.encode(texts)
+    faiss.normalize_L2(vecs)
 
-    if case_idx.ntotal == 0: case_idx = faiss.IndexFlatL2(1024)
+    if case_idx.ntotal == 0: case_idx = faiss.IndexFlatIP(1024)
     if len(vecs) > 0:
         case_idx.add(vecs)
         case_data.extend(seed_cases)
@@ -986,7 +1032,7 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         # 4. 向量化并构建索引
         print("\n[INFO] 步骤 4/4: 向量化并构建 FAISS 索引...")
         temp_embedder = AliyunEmbedder(aliyun_key)
-        kb_idx = faiss.IndexFlatL2(1024)
+        kb_idx = faiss.IndexFlatIP(1024)
         
         print(f"[INFO]   → 调用阿里云 Embedding API (批次大小: 25)...")
         
@@ -1009,6 +1055,7 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         
         vecs = np.vstack(all_vecs)
         print(f"[INFO]   ✓ 获得向量: {vecs.shape}")
+        faiss.normalize_L2(vecs)
         
         kb_idx.add(vecs)
         print(f"[INFO]   ✓ FAISS 索引构建完成 (共 {kb_idx.ntotal} 条)")
@@ -1094,10 +1141,11 @@ def show_cases_dialog(embedder: AliyunEmbedder):
             new_cases = [c for i, c in enumerate(cases) if i not in selected_to_delete]
             
             # 重建FAISS索引
-            new_idx = faiss.IndexFlatL2(1024)
+            new_idx = faiss.IndexFlatIP(1024)
             if new_cases:
                 texts = [c["text"] for c in new_cases]
                 vecs = embedder.encode(texts)
+                faiss.normalize_L2(vecs)
                 new_idx.add(vecs)
             
             st.session_state.cases = (new_idx, new_cases)
@@ -1160,10 +1208,11 @@ def edit_case_dialog(case_idx: int, embedder: AliyunEmbedder):
             }
             
             # 重建FAISS索引（因为文本可能变了）
-            new_idx = faiss.IndexFlatL2(1024)
+            new_idx = faiss.IndexFlatIP(1024)
             texts = [c["text"] for c in cases]
             vecs = embedder.encode(texts)
-            new_idx.add(vecs)
+            faiss.normalize_L2(vecs)
+                new_idx.add(vecs)
             
             st.session_state.cases = (new_idx, cases)
             ResourceManager.save(new_idx, cases, PATHS.case_index, PATHS.case_data, is_json=True)
@@ -1196,17 +1245,7 @@ if 'loaded' not in st.session_state:
     print("[INFO] 步骤 1/3: 加载本地缓存数据...")
     kb_idx, kb_data = ResourceManager.load(PATHS.kb_index, PATHS.kb_chunks)
     case_idx, case_data = ResourceManager.load(PATHS.case_index, PATHS.case_data, is_json=True)
-    # ✅ 自愈：case 向量索引与 case_data 不一致时自动重建
-    case_idx, case_data = st.session_state.cases
-    if case_data and (case_idx.ntotal != len(case_data)):
-        print(f"[WARN] case index mismatch: index={case_idx.ntotal}, data={len(case_data)}. Rebuilding...")
-        new_idx = faiss.IndexFlatL2(1024)
-        texts = [c.get("text", "") for c in case_data]
-        vecs = embedder.encode(texts)
-        if len(vecs) > 0:
-            new_idx.add(vecs)
-        st.session_state.cases = (new_idx, case_data)
-        ResourceManager.save(new_idx, case_data, PATHS.case_index, PATHS.case_data, is_json=True)
+    # (removed) case self-heal moved to cosine-migration helper after embedder init
 
     st.session_state.kb = (kb_idx, kb_data)
     st.session_state.cases = (case_idx, case_data)
@@ -1286,6 +1325,9 @@ with st.sidebar:
     
     bootstrap_seed_cases(embedder)
     
+    # ✅ Ensure FAISS indices use cosine similarity (IP + normalized vectors)
+    ensure_case_index_cosine(embedder)
+    ensure_kb_index_cosine(embedder)
     st.markdown("---")
     
     # ===== 延迟加载 RAG 逻辑 =====
@@ -1498,7 +1540,9 @@ with tab1:
             st.session_state.cases[1].append(nc)
             
             # ✅ embedding 与 nc["text"] 完全一致
-            st.session_state.cases[0].add(embedder.encode([nc_text]))
+            v = embedder.encode([nc_text]).astype("float32")
+            faiss.normalize_L2(v)
+            st.session_state.cases[0].add(v)
             ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
             GithubSync.sync_cases(st.session_state.cases[1])
             
@@ -1718,7 +1762,8 @@ with tab4:
                 if st.form_submit_button("保存判例并同步"):
                     new_c = {"text": f_txt, "tags": f_tag, "scores": input_scores, "created_at": time.strftime("%Y-%m-%d")}
                     st.session_state.cases[1].append(new_c)
-                    vec = embedder.encode([f_txt])
+                    vec = embedder.encode([f_txt]).astype("float32")
+                    faiss.normalize_L2(vec)
                     st.session_state.cases[0].add(vec)
                     ResourceManager.save(st.session_state.cases[0], st.session_state.cases[1], PATHS.case_index, PATHS.case_data, is_json=True)
                     
