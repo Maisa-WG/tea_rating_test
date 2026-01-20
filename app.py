@@ -1388,33 +1388,44 @@ with tab1:
     # 用于生成动态key，确保每次新评分时校准输入框显示新内容
     if 'score_version' not in st.session_state:
         st.session_state.score_version = 0
-    
-    if st.button("开始评分", type="primary", use_container_width=True):
-        if not user_input: st.warning("请输入内容")
-        else:
-            with st.spinner(f"正在使用 {model_id} 品鉴..."):
-                user_input = llm_normalize_user_input(user_input, client_d)
-                st.session_state.current_user_input = user_input
-                scores, kb_h, case_h = run_scoring(user_input, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen2.5-7B-Instruct", r_num, c_num)
-
-    # ✅ 保存命中结果，避免 st.rerun() 后丢失
-    st.session_state.last_case_hits = case_h
-    st.session_state.last_kb_hits = kb_h
-    
-    if scores:
-        st.session_state.last_scores = scores
-        st.session_state.last_master_comment = scores.get("master_comment", "")
-    
-        # 递增版本号，使校准输入框使用新的key，从而显示新的默认值
-        st.session_state.score_version += 1
-        st.rerun()
         
-        if st.session_state.last_scores:
-            s = st.session_state.last_scores["scores"]
-            mc = st.session_state.last_master_comment
-            st.markdown(f'<div class="master-comment"><b>👵 宗师总评：</b><br>{mc}</div>', unsafe_allow_html=True)
-            
-    
+    if st.button("开始评分", type="primary", use_container_width=True):
+    if not user_input:
+        st.warning("请输入内容")
+    else:
+        with st.spinner(f"正在使用 {model_id} 品鉴."):
+            user_input = llm_normalize_user_input(user_input, client_d)
+            st.session_state.current_user_input = user_input
+
+            scores, kb_h, case_h = run_scoring(
+                user_input,
+                st.session_state.kb,
+                st.session_state.cases,
+                st.session_state.prompt_config,
+                embedder,
+                client,
+                "Qwen2.5-7B-Instruct",
+                r_num,
+                c_num
+            )
+
+            # ✅ 只在这里保存：此时 case_h 一定已定义
+            st.session_state.last_case_hits = case_h or []
+            st.session_state.last_kb_hits = kb_h or []
+
+            if scores:
+                st.session_state.last_scores = scores
+                st.session_state.last_master_comment = scores.get("master_comment", "")
+                st.session_state.score_version += 1
+                st.rerun()
+
+
+    if st.session_state.last_scores:
+        s = st.session_state.last_scores["scores"]
+        mc = st.session_state.last_master_comment
+        st.markdown(f'<div class="master-comment"><b>👵 宗师总评：</b><br>{mc}</div>', unsafe_allow_html=True)
+        
+
     # ✅ Debug: 展示本次命中的判例（rerun 后仍可见）
     case_h = st.session_state.get("last_case_hits", [])
     st.subheader("🔍 Debug: 命中的判例（Top-K）")
@@ -1930,4 +1941,5 @@ with tab6:
     
     
     
+
 
