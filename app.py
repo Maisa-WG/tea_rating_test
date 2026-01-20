@@ -291,6 +291,37 @@ class GithubSync:
             except Exception as e:
                 st.error(f"Github 读取失败: {str(e)}")
                 return default
+        @staticmethod
+        def load_json(file_path_in_repo: str, default=None):
+            """从 Github 读取 JSON 文件；不存在/读取失败则返回 default"""
+            if default is None:
+                default = []
+    
+            g, repo_name, branch = GithubSync._get_github_client()
+            if not g or not repo_name:
+                return default
+    
+            try:
+                repo = g.get_repo(repo_name)
+                contents = repo.get_contents(file_path_in_repo, ref=branch)
+    
+                raw = contents.decoded_content.decode("utf-8")
+                raw = raw.strip()
+                if not raw:
+                    return default
+                return json.loads(raw)
+    
+            except GithubException as e:
+                # 文件不存在
+                if getattr(e, "status", None) == 404:
+                    return default
+                st.error(f"Github 读取失败: {str(e)}")
+                return default
+    
+            except Exception as e:
+                st.error(f"Github 读取失败: {str(e)}")
+                return default
+
 
     @staticmethod
     def push_binary_file(file_path_in_repo: str, file_content: bytes, commit_msg: str = "Upload file") -> bool:
@@ -1778,6 +1809,7 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
 
 
