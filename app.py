@@ -625,17 +625,17 @@ class EvaluationLogger:
 
 class AliyunEmbedder:
     def __init__(self, api_key):
-        self.model_name = "text-embedding-v3"
+        self.model_name = "text-embedding-v4"
         dashscope.api_key = api_key # 确保 API KEY 被正确设置给全局
         
-    def encode(self, texts: List[str]) -> np.ndarray:
+    def encode(self, texts: List[str], text_type: str = "document") -> np.ndarray:
         if not texts:
             return np.zeros((0, 1024), dtype="float32")
         if isinstance(texts, str):
             texts = [texts]
     
         try:
-            resp = TextEmbedding.call(model=self.model_name, input=texts)
+            resp = TextEmbedding.call(model=self.model_name, input=texts, text_type=text_type, dimension=1024)
         except Exception as e:
             # 关键：不要吞掉，否则检索会“永远不变”
             raise RuntimeError(f"[Embedding] call failed: {type(e).__name__}: {e}")
@@ -739,7 +739,7 @@ def llm_normalize_user_input(raw_query: str, client: OpenAI) -> str:
 
 def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, embedder: AliyunEmbedder, client: OpenAI, model_id: str, k_num: int, c_num: int):
     """执行 RAG 检索与 LLM 评分"""
-    vec = embedder.encode([text]).astype("float32")
+    vec = embedder.encode([text], text_type='query').astype('float32')
     faiss.normalize_L2(vec)
     # Debug：norm 应该约等于 1.0；如果不是，embedding 或 normalize 有问题
     print(f"[DEBUG] query_vec_norm={float(np.linalg.norm(vec[0])):.6f}")
@@ -2020,8 +2020,6 @@ with tab6:
     
     
     
-
-
 
 
 
