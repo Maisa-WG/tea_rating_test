@@ -978,7 +978,15 @@ def bootstrap_seed_cases(embedder: AliyunEmbedder):
         return
 
     texts = [c["text"] for c in seed_cases]
-    vecs = embedder.encode(texts)
+    
+    all_vecs = []
+    batch_size = 10
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        vecs = embedder.encode(batch)
+        all_vecs.append(vecs)
+    
+    vecs = np.vstack(all_vecs)
     faiss.normalize_L2(vecs)
 
     if case_idx.ntotal == 0: case_idx = faiss.IndexFlatIP(1024)
@@ -1052,10 +1060,10 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         temp_embedder = AliyunEmbedder(aliyun_key)
         kb_idx = faiss.IndexFlatIP(1024)
         
-        print(f"[INFO]   → 调用阿里云 Embedding API (批次大小: 25)...")
+        print(f"[INFO]   → 调用阿里云 Embedding API (批次大小: 10)...")
         
         # 分批向量化，避免 API 限制
-        batch_size = 25
+        batch_size = 10
         all_vecs = []
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i+batch_size]
@@ -2020,6 +2028,7 @@ with tab6:
     
     
     
+
 
 
 
