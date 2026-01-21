@@ -925,6 +925,8 @@ def create_word_report(results: List[Dict]) -> BytesIO:
 
 def plot_flavor_shape(scores_data: Dict):
     """绘制风味形态图"""
+    if not scores_data or not isinstance(scores_data, dict) or "scores" not in scores_data:
+        return None  # 没有分数就不画图
     s = scores_data["scores"]
     top = (s["优雅性"]["score"] + s["辨识度"]["score"]) / 2
     mid = (s["协调性"]["score"] + s["饱和度"]["score"]) / 2
@@ -1522,7 +1524,12 @@ with tab1:
     left_col, right_col = st.columns([35, 65]) 
     with left_col:
         st.subheader("📊 风味形态")
-        st.pyplot(plot_flavor_shape(st.session_state.last_scores), use_container_width=True)
+        fig = plot_flavor_shape(st.session_state.get("last_scores"))
+        if fig is not None:
+            st.pyplot(fig, use_container_width=True)
+        else:
+            st.info("暂无评分结果，无法绘制风味形态图。")
+
     with right_col:
         cols = st.columns(2)
         factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
@@ -2028,6 +2035,7 @@ with tab6:
     
     
     
+
 
 
 
