@@ -1155,23 +1155,15 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown(f"**预处理模型：** `Deepseek-chat`")
-    model_id = "Qwen2.5-7B-Instruct"  # 默认使用基础模型
-    lora_enabled = False
-    
+    st.markdown(f"**评分模型：** `Qwen2.5-7B-Instruct`")
+    model_id = "Qwen2.5-7B-Instruct"
     try:
         resp = requests.get("http://117.50.89.74:8001/status", timeout=2)
-        if resp.status_code == 200:
-            status_data = resp.json()
-            # ✅ 修复：检查 lora_gguf_available（实际能被挂载的格式）
-            if status_data.get("lora_gguf_available"):
-                lora_enabled = True
-                st.success("🎉 已启用微调模型 (LoRA-GGUF)")
-            elif status_data.get("lora_available"):
-                st.info("ℹ️ 检测到 LoRA 权重但未转换为 GGUF，使用基础模型")
-    except Exception as e:
-        st.caption(f"⚠️ 无法获取模型状态: {e}")
-    
-    st.markdown(f"**评分模型：** `{model_id}` {'(含LoRA)' if lora_enabled else '(基础版)'}")
+        if resp.status_code == 200 and resp.json().get("lora_available"):
+            model_id = "default_lora"
+            st.success("🎉 已启用微调模型")
+    except:
+        pass
     ft_status = ResourceManager.load_ft_status()
     if ft_status and ft_status.get("status") == "succeeded":
         st.info(f"🎉 发现微调模型：`{ft_status.get('fine_tuned_model')}`")
@@ -1578,102 +1570,75 @@ with tab4:
                     time.sleep(1); st.rerun()
 
     # --- 右侧：微调控制 ---
-with c2:
-    st.subheader("🚀 模型微调 (LoRA)")
-    
-    # ===== 修复：正确解析服务器状态 =====
-    server_status = "unknown"
-    lora_status = {"hf": False, "gguf": False}
-    
-    try:
-        resp = requests.get(f"{MANAGER_URL}/status", timeout=2)
-        if resp.status_code == 200:
-            status_data = resp.json()
-            
-            # ✅ 修复1：使用正确的字段名 server_status
-            raw_status = status_data.get("server_status", "stopped")
-            
-            # ✅ 修复2：完整的状态映射逻辑
-            if raw_status == "running":
-                server_status = "idle"  # 推理服务正常运行
-            elif raw_status == "starting":
-                server_status = "starting"  # 推理服务启动中
-            elif raw_status == "stopped":
-                server_status = "training"  # 推理服务停止（通常是在训练）
+    with c2:
+        st.subheader("🚀 模型微调 (LoRA)")
+        
+        server_status = "unknown"
+        try:
+            resp = requests.get(f"{MANAGER_URL}/status", timeout=2)
+            if resp.status_code == 200:
+                status_data = resp.json()
+                if status_data.get("vllm_status") == "running":
+                    server_status = "idle"
+                else:
+                    server_status = "training"
             else:
                 server_status = "error"
-            
-            # ✅ 修复3：检测 LoRA 状态（GGUF 格式才能实际使用）
-            lora_status["hf"] = status_data.get("lora_available", False)
-            lora_status["gguf"] = status_data.get("lora_gguf_available", False)
-        else:
-            server_status = "error"
-    except Exception as e:
-        server_status = "offline"
-        st.caption(f"⚠️ 连接失败: {e}")
-    
-    # ===== 修复：更准确的状态显示 =====
-    if server_status == "idle":
-        st.success("🟢 服务器就绪 (正在进行推理服务)")
-        # ✅ 修复4：显示 LoRA 状态
-        if lora_status["gguf"]:
-            st.info("🎉 已挂载微调模型 (LoRA-GGUF)")
-        elif lora_status["hf"]:
-            st.warning("⚠️ 检测到 LoRA 权重 (HF 格式)，但未转换为 GGUF 格式，推理服务未挂载")
-    elif server_status == "starting":
-        st.info("🟡 推理服务启动中，请稍候...")
-    elif server_status == "training":
-        st.warning("🟠 正在微调训练中... (推理服务暂停)")
-        st.markdown("⚠️ **注意：** 此时无法进行评分交互，请耐心等待训练完成。")
-    elif server_status == "offline":
-        st.error("🔴 无法连接到 GPU 服务器 (请联系管理员)")
-    else:
-        st.error("🔴 服务器状态异常，请检查日志")
-
-    st.markdown("#### 1. 数据准备")
-    
-    if PATHS.training_file.exists():
-        with open(PATHS.training_file, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        data_count = len(lines)
-    else:
-        data_count = 0
+        except:
+            server_status = "offline"
         
-    st.info(f"当前微调数据：**{data_count} 条** | 判例库：**{len(st.session_state.cases[1])} 条**")
-    
-    # ===== 修改：覆盖逻辑 =====
-    if st.button("🔄 将当前所有判例转为微调数据（覆盖）"):
-        cnt = ResourceManager.overwrite_finetune(
-            st.session_state.cases[1],
-            st.session_state.prompt_config.get('system_template',''), 
-            st.session_state.prompt_config.get('user_template','')
-        )
-        st.success(f"已覆盖写入 {cnt} 条微调数据！")
-        time.sleep(1); st.rerun()
+        if server_status == "idle":
+            st.success("🟢 服务器就绪 (正在进行推理服务)")
+        elif server_status == "training":
+            st.warning("🟠 正在微调训练中... (推理服务暂停)")
+            st.markdown("⚠️ **注意：** 此时无法进行评分交互，请耐心等待训练完成。")
+        elif server_status == "offline":
+            st.error("🔴 无法连接到 GPU 服务器 (请联系管理员)")
 
-    st.markdown("#### 2. 启动训练")
-    st.caption("点击下方按钮将把数据上传至 GPU 服务器并开始训练。训练期间服务将中断约 2-5 分钟。")
-
-    btn_disabled = (server_status != "idle") or (data_count == 0)
-    
-    if st.button("🔥 开始微调 (Start LoRA)", type="primary", disabled=btn_disabled):
-        if not PATHS.training_file.exists():
-            st.error("找不到训练数据文件！")
+        st.markdown("#### 1. 数据准备")
+        
+        if PATHS.training_file.exists():
+            with open(PATHS.training_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            data_count = len(lines)
         else:
-            try:
-                with open(PATHS.training_file, "rb") as f:
-                    with st.spinner("正在上传数据并启动训练任务..."):
-                        files = {'file': ('tea_feedback.jsonl', f, 'application/json')}
-                        r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=100)
-                        
-                    if r.status_code == 200:
-                        st.balloons()
-                        st.success(f"✅ 任务已提交！服务器响应: {r.json().get('message')}")
-                        st.info("💡 你可以稍后刷新页面查看状态，训练完成后服务会自动恢复。")
-                    else:
-                        st.error(f"❌ 提交失败: {r.text}")
-            except Exception as e:
-                st.error(f"❌ 连接错误: {e}")
+            data_count = 0
+            
+        st.info(f"当前微调数据：**{data_count} 条** | 判例库：**{len(st.session_state.cases[1])} 条**")
+        
+        # ===== 修改：覆盖逻辑 =====
+        if st.button("🔄 将当前所有判例转为微调数据（覆盖）"):
+            cnt = ResourceManager.overwrite_finetune(
+                st.session_state.cases[1],
+                st.session_state.prompt_config.get('system_template',''), 
+                st.session_state.prompt_config.get('user_template','')
+            )
+            st.success(f"已覆盖写入 {cnt} 条微调数据！")
+            time.sleep(1); st.rerun()
+
+        st.markdown("#### 2. 启动训练")
+        st.caption("点击下方按钮将把数据上传至 GPU 服务器并开始训练。训练期间服务将中断约 2-5 分钟。")
+
+        btn_disabled = (server_status != "idle") or (data_count == 0)
+        
+        if st.button("🔥 开始微调 (Start LoRA)", type="primary", disabled=btn_disabled):
+            if not PATHS.training_file.exists():
+                st.error("找不到训练数据文件！")
+            else:
+                try:
+                    with open(PATHS.training_file, "rb") as f:
+                        with st.spinner("正在上传数据并启动训练任务..."):
+                            files = {'file': ('tea_feedback.jsonl', f, 'application/json')}
+                            r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=100)
+                            
+                        if r.status_code == 200:
+                            st.balloons()
+                            st.success(f"✅ 任务已提交！服务器响应: {r.json().get('message')}")
+                            st.info("💡 你可以稍后刷新页面查看状态，训练完成后服务会自动恢复。")
+                        else:
+                            st.error(f"❌ 提交失败: {r.text}")
+                except Exception as e:
+                    st.error(f"❌ 连接错误: {e}")
 
 # --- Tab 4: Prompt配置 ---
 with tab5:
@@ -1701,7 +1666,3 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
-
-
-
-
