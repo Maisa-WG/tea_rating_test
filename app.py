@@ -18,6 +18,7 @@ from openai import OpenAI
 from docx import Document
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
+from graphrag_retriever import GraphRAGRetriever
 import base64
 
 # ==========================================
@@ -57,6 +58,8 @@ class PathConfig:
     def __init__(self):
         self.DATA_DIR.mkdir(exist_ok=True)
         self.RAG_DIR.mkdir(exist_ok=True)  # 确保RAG目录存在
+        self.GRAPHRAG_DIR = self.DATA_DIR / "graphrag_artifacts"
+        self.GRAPHRAG_DIR.mkdir(exist_ok=True)
         # 向量库与持久化数据
         self.kb_index = self.DATA_DIR / "kb.index"
         self.kb_chunks = self.DATA_DIR / "kb_chunks.pkl"
@@ -593,15 +596,126 @@ def llm_normalize_user_input(raw_query: str, client: OpenAI) -> str:
     )
     return resp.choices[0].message.content.strip()
 
+# ==========================================
+# [SECTION 1.5] External GraphRAG static KB retrieval (via graphrag_retriever.py)
+# ==========================================
+
+def _get_graphrag_artifact_dir() -> str:
+    """Resolve GraphRAG artifact directory (env overrides local default)."""
+    env_dir = os.getenv("GRAPHRAG_ARTIFACT_DIR", "").strip()
+    if env_dir:
+        return env_dir
+    return str(getattr(PATHS, "GRAPHRAG_DIR", PATHS.DATA_DIR / "graphrag_artifacts"))
+
+def _get_graphrag_retriever() -> 'GraphRAGRetriever | None':
+    """Lazily load GraphRAGRetriever and cache in session_state."""
+    if st.session_state.get("_gr_retriever_loaded", False):
+        return st.session_state.get("_gr_retriever_obj", None)
+
+    artifact_dir = _get_graphrag_artifact_dir()
+    edges_path = os.path.join(artifact_dir, "graph_edges.jsonl")
+    comm_path = os.path.join(artifact_dir, "communities.json")
+    if not (os.path.exists(edges_path) and os.path.exists(comm_path)):
+        st.session_state["_gr_retriever_loaded"] = True
+        st.session_state["_gr_retriever_obj"] = None
+        return None
+
+    try:
+        gr = GraphRAGRetriever(artifact_dir=artifact_dir)
+        st.session_state["_gr_retriever_loaded"] = True
+        st.session_state["_gr_retriever_obj"] = gr
+        return gr
+    except Exception as e:
+        print(f"[WARN] GraphRAGRetriever init failed: {e}")
+        st.session_state["_gr_retriever_loaded"] = True
+        st.session_state["_gr_retriever_obj"] = None
+        return None
+
+def graphrag_static_kb_context(query_vec: np.ndarray,
+                              kb_index: faiss.Index,
+                              kb_chunks: List[str],
+                              k_num: Optional[int] = None,
+                              top_seed: int = 5,
+                              hop: int = 1,
+                              max_expand: int = 12) -> Tuple[str, List[str]]:
+    """Build KB context using (vector seeds) + GraphRAG expansion over a static KB graph."""
+    if kb_index is None or getattr(kb_index, "ntotal", 0) <= 0 or not kb_chunks:
+        return "（无手册资料）", []
+
+    # Vector seeds
+    D, I = kb_index.search(query_vec, max(k_num, top_seed))
+    vector_hits: List[Tuple[str, float]] = []
+    for score, idx in zip(D[0].tolist(), I[0].tolist()):
+        if idx is None or idx < 0 or idx >= len(kb_chunks):
+            continue
+        vector_hits.append((str(idx), float(score)))
+
+    # Map for retriever
+    chunk_text_map = {str(i): kb_chunks[i] for i in range(len(kb_chunks))}
+
+    gr = _get_graphrag_retriever()
+    if gr is None:
+        # Fallback: classic vector context
+        hits = [kb_chunks[int(cid)] for cid, _ in vector_hits[:k_num]]
+        ctx = "\n".join([f"- {h[:240].strip()}..." for h in hits]) if hits else "（无手册资料）"
+        return ctx, hits
+
+    try:
+        expanded = gr.expand(
+            vector_hits=vector_hits,
+            chunk_text_map=chunk_text_map,
+            top_seed=top_seed,
+            hop=hop,
+            max_expand=max_expand,
+            w_vec=0.7,
+            w_graph=0.3
+        )
+        seeds = expanded.get("seed_chunks", [])
+        exp_chunks = expanded.get("expanded_chunks", [])
+        comm = expanded.get("community_summaries", [])
+
+        # Extract text from result dicts
+        seed_texts = [s.get("text", "") for s in seeds if s.get("text")]
+        exp_texts = [c.get("text", "") for c in exp_chunks if c.get("text")]
+        comm_texts = [c.get("summary", "") for c in comm if c.get("summary")]
+
+        # Compose: community summaries first (global), then seeds, then expanded
+        parts = []
+        if comm_texts:
+            parts.append("【GraphRAG 社区摘要】\n" + "\n\n".join(comm_texts[:2]))
+        if seed_texts:
+            parts.append("【向量检索种子片段】\n" + "\n".join([f"- {s[:240].strip()}..." for s in seed_texts[:k_num]]))
+        if exp_texts:
+            parts.append("【Graph 扩展片段】\n" + "\n".join([f"- {c[:240].strip()}..." for c in exp_texts[:k_num]]))
+        ctx = "\n\n".join(parts) if parts else "（无手册资料）"
+
+        hits_texts = []
+        for t in (seed_texts + exp_texts):
+            if t and t not in hits_texts:
+                hits_texts.append(t)
+            if len(hits_texts) >= k_num:
+                break
+        return ctx, hits_texts
+    except Exception as e:
+        print(f"[WARN] GraphRAG expand failed, fallback to vector-only. err={e}")
+        hits = [kb_chunks[int(cid)] for cid, _ in vector_hits[:k_num]]
+        ctx = "\n".join([f"- {h[:240].strip()}..." for h in hits]) if hits else "（无手册资料）"
+        return ctx, hits
+
 def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, embedder: AliyunEmbedder, client: OpenAI, model_id: str, k_num: int, c_num: int):
     """执行 RAG 检索与 LLM 评分"""
     vec = embedder.encode([text]) 
     
-    ctx_txt, hits = "（无手册资料）", []
-    if kb_res[0].ntotal > 0:
-        _, idx = kb_res[0].search(vec, k_num)
-        hits = [kb_res[1][i] for i in idx[0] if i < len(kb_res[1])]
-        ctx_txt = "\n".join([f"- {h[:200]}..." for h in hits])
+    # --- KB (External GraphRAG over static KB) ---
+    ctx_txt, hits = graphrag_static_kb_context(
+        query_vec=vec,
+        kb_index=kb_res[0],
+        kb_chunks=kb_res[1],
+        k_num=k_num,
+        top_seed=max(5, k_num),
+        hop=1,
+        max_expand=12
+    )
 
     case_txt, found_cases = "（无相似判例）", []
     if case_res[0].ntotal > 0:
@@ -917,6 +1031,7 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         st.session_state.kb = (kb_idx, chunks)
         st.session_state.kb_files = file_names
         
+        # Build GraphRAG-style community summaries for static KB chunks (non-case)
         ResourceManager.save(kb_idx, chunks, PATHS.kb_index, PATHS.kb_chunks)
         ResourceManager.save_kb_files(file_names)
         
@@ -1267,6 +1382,7 @@ with st.sidebar:
 # C. 主界面
 st.markdown('<div class="main-title">🍵 茶品六因子 AI 评分器 Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="slogan">"一片叶子落入水中，改变了水的味道..."</div>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center; color:#888; font-size:0.95em;">推理服务开放时间：9:00~20:00</p>', unsafe_allow_html=True)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["💡 交互评分", "🚀 批量评分", "📕 知识库设计", "🛠️ 判例库与微调", "📲 提示词（Prompt）配置"])
 
@@ -1573,74 +1689,84 @@ with tab4:
     with c2:
         st.subheader("🚀 模型微调 (LoRA)")
         
-        server_status = "unknown"
-        try:
-            resp = requests.get(f"{MANAGER_URL}/status", timeout=2)
-            if resp.status_code == 200:
-                status_data = resp.json()
-                if status_data.get("vllm_status") == "running":
-                    server_status = "idle"
-                else:
-                    server_status = "training"
+        admin_pwd = st.text_input("🔒 请输入管理员密码以解锁微调功能", type="password", key="admin_pwd_tab4")
+        
+        if admin_pwd != "tea_agent_2026":
+            if admin_pwd:
+                st.error("❌ 密码错误，请重试。")
             else:
-                server_status = "error"
-        except:
-            server_status = "offline"
-        
-        if server_status == "idle":
-            st.success("🟢 服务器就绪 (正在进行推理服务)")
-        elif server_status == "training":
-            st.warning("🟠 正在微调训练中... (推理服务暂停)")
-            st.markdown("⚠️ **注意：** 此时无法进行评分交互，请耐心等待训练完成。")
-        elif server_status == "offline":
-            st.error("🔴 无法连接到 GPU 服务器 (请联系管理员)")
-
-        st.markdown("#### 1. 数据准备")
-        
-        if PATHS.training_file.exists():
-            with open(PATHS.training_file, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            data_count = len(lines)
+                st.info("🔐 输入管理员密码后解锁微调功能。")
         else:
-            data_count = 0
+            st.success("✅ 已解锁微调功能")
             
-        st.info(f"当前微调数据：**{data_count} 条** | 判例库：**{len(st.session_state.cases[1])} 条**")
-        
-        # ===== 修改：覆盖逻辑 =====
-        if st.button("🔄 将当前所有判例转为微调数据（覆盖）"):
-            cnt = ResourceManager.overwrite_finetune(
-                st.session_state.cases[1],
-                st.session_state.prompt_config.get('system_template',''), 
-                st.session_state.prompt_config.get('user_template','')
-            )
-            st.success(f"已覆盖写入 {cnt} 条微调数据！")
-            time.sleep(1); st.rerun()
+            server_status = "unknown"
+            try:
+                resp = requests.get(f"{MANAGER_URL}/status", timeout=2)
+                if resp.status_code == 200:
+                    status_data = resp.json()
+                    if status_data.get("vllm_status") == "running":
+                        server_status = "idle"
+                    else:
+                        server_status = "training"
+                else:
+                    server_status = "error"
+            except:
+                server_status = "offline"
+            
+            if server_status == "idle":
+                st.success("🟢 服务器就绪 (正在进行推理服务)")
+            elif server_status == "training":
+                st.warning("🟠 正在微调训练中... (推理服务暂停)")
+                st.markdown("⚠️ **注意：** 此时无法进行评分交互，请耐心等待训练完成。")
+            elif server_status == "offline":
+                st.error("🔴 无法连接到 GPU 服务器 (请联系管理员)")
 
-        st.markdown("#### 2. 启动训练")
-        st.caption("点击下方按钮将把数据上传至 GPU 服务器并开始训练。训练期间服务将中断约 2-5 分钟。")
-
-        btn_disabled = (server_status != "idle") or (data_count == 0)
-        
-        if st.button("🔥 开始微调 (Start LoRA)", type="primary", disabled=btn_disabled):
-            if not PATHS.training_file.exists():
-                st.error("找不到训练数据文件！")
+            st.markdown("#### 1. 数据准备")
+            
+            if PATHS.training_file.exists():
+                with open(PATHS.training_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                data_count = len(lines)
             else:
-                try:
-                    with open(PATHS.training_file, "rb") as f:
-                        with st.spinner("正在上传数据并启动训练任务..."):
-                            files = {'file': ('tea_feedback.jsonl', f, 'application/json')}
-                            r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=100)
-                            
-                        if r.status_code == 200:
-                            st.balloons()
-                            st.success(f"✅ 任务已提交！服务器响应: {r.json().get('message')}")
-                            st.info("💡 你可以稍后刷新页面查看状态，训练完成后服务会自动恢复。")
-                        else:
-                            st.error(f"❌ 提交失败: {r.text}")
-                except Exception as e:
-                    st.error(f"❌ 连接错误: {e}")
+                data_count = 0
+                
+            st.info(f"当前微调数据：**{data_count} 条** | 判例库：**{len(st.session_state.cases[1])} 条**")
+            
+            # ===== 修改：覆盖逻辑 =====
+            if st.button("🔄 将当前所有判例转为微调数据（覆盖）"):
+                cnt = ResourceManager.overwrite_finetune(
+                    st.session_state.cases[1],
+                    st.session_state.prompt_config.get('system_template',''), 
+                    st.session_state.prompt_config.get('user_template','')
+                )
+                st.success(f"已覆盖写入 {cnt} 条微调数据！")
+                time.sleep(1); st.rerun()
 
-# --- Tab 4: Prompt配置 ---
+            st.markdown("#### 2. 启动训练")
+            st.caption("点击下方按钮将把数据上传至 GPU 服务器并开始训练。训练期间服务将中断约 2-5 分钟。")
+
+            btn_disabled = (server_status != "idle") or (data_count == 0)
+            
+            if st.button("🔥 开始微调 (Start LoRA)", type="primary", disabled=btn_disabled):
+                if not PATHS.training_file.exists():
+                    st.error("找不到训练数据文件！")
+                else:
+                    try:
+                        with open(PATHS.training_file, "rb") as f:
+                            with st.spinner("正在上传数据并启动训练任务..."):
+                                files = {'file': ('tea_feedback.jsonl', f, 'application/json')}
+                                r = requests.post(f"{MANAGER_URL}/upload_and_train", files=files, timeout=100)
+                                
+                            if r.status_code == 200:
+                                st.balloons()
+                                st.success(f"✅ 任务已提交！服务器响应: {r.json().get('message')}")
+                                st.info("💡 你可以稍后刷新页面查看状态，训练完成后服务会自动恢复。")
+                            else:
+                                st.error(f"❌ 提交失败: {r.text}")
+                    except Exception as e:
+                        st.error(f"❌ 连接错误: {e}")
+
+# --- Tab 5: Prompt配置 ---
 with tab5:
     pc = st.session_state.prompt_config
     st.markdown("系统提示词**可以修改**。完整全面的提示词会让大语言模型返回的更准确结果。")    
