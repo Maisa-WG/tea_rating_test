@@ -730,7 +730,8 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
                 case_txt += f"\n参考案例: {c['text'][:30]}... -> 优雅性:{u_sc} 苦涩度:{k_sc}"
 
     sys_p = prompt_cfg.get('system_template', "")
-    user_p = prompt_cfg.get('user_template', "").format(product_desc=text, context_text=ctx_txt, case_text=case_txt)
+    user_p = prompt_cfg.get('user_template', "")
+    user_p = user_p.replace("{product_desc}", text).replace("{context_text}", ctx_txt).replace("{case_text}", case_txt)
 
     try:
         resp = client.chat.completions.create(
@@ -1792,6 +1793,7 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
 
 
