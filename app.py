@@ -732,7 +732,8 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
     sys_p = prompt_cfg.get('system_template', "")
     user_p = prompt_cfg.get('user_template', "")
     user_p = user_p.replace("{product_desc}", text).replace("{context_text}", ctx_txt).replace("{case_text}", case_txt)
-    print(user_p)
+    print(f"[DEBUG] user_p:\n{user_p}")    
+    
     try:
         resp = client.chat.completions.create(
             model=model_id,
@@ -1793,6 +1794,7 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
 
 
