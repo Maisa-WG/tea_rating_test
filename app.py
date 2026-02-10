@@ -158,7 +158,7 @@ class ResourceManager:
                     scores = c.get("scores", {})
                     master_comment = c.get("master_comment", "（人工校准）")
                     
-                    user_content = user_tpl.format(product_desc=case_text, context_text="", case_text="")
+                    user_content = user_tpl.replace("{product_desc}", case_text).replace("{context_text}", "").replace("{case_text}", "")
                     assistant_content = json.dumps({"master_comment": master_comment, "scores": scores}, ensure_ascii=False)
                     entry = {
                         "messages": [
@@ -1793,6 +1793,7 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
 
 
