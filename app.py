@@ -716,7 +716,6 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
         hop=1,
         max_expand=12
     )
-    ctx_txt = ctx_txt.replace("{", "{{").replace("}", "}}")
     
     case_txt, found_cases = "（无相似判例）", []
     if case_res[0].ntotal > 0:
@@ -1793,5 +1792,6 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
 
 
