@@ -6,7 +6,7 @@ import numpy as np
 import faiss
 import time
 import pickle
-from github import Github, GithubException, Auth
+from github import Github, GithubException, Auth  # 新增 Auth
 from pathlib import Path
 from io import BytesIO
 from typing import List, Dict, Any, Tuple, Optional
@@ -43,7 +43,6 @@ st.markdown("""
     .master-comment {background-color: #FFFDE7; border: 1px solid #FFF9C4; padding: 15px; border-radius: 8px; font-family: "KaiTi", serif; font-size: 1.1em; color: #5D4037; margin-bottom: 20px; line-height: 1.6;}
     .ft-card {border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f8f9fa; margin-top: 10px;}
     .case-card {border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; margin-bottom: 10px; background-color: #fafafa;}
-    .prompt-box {background-color: #f5f5f5; padding: 12px; border-radius: 6px; border-left: 3px solid #4CAF50; font-family: monospace; font-size: 0.9em; white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -205,11 +204,6 @@ class ResourceManager:
             except: pass
         return []
 
-# f:
-                    return json.load(f)
-            except: pass
-        return []
-
 # ==========================================
 # [SECTION 1.5] Github 同步工具 (增强版)
 # ==========================================
@@ -221,7 +215,9 @@ class GithubSync:
     def _get_github_config():
         """获取GitHub配置"""
         token = st.secrets.get("GITHUB_TOKEN")
-        repo_name = st.secrets.get("GITHUB_REPO"), repo_name, branch
+        repo_name = st.secrets.get("GITHUB_REPO")
+        branch = st.secrets.get("GITHUB_BRANCH", "main")
+        return token, repo_name, branch
     
     @staticmethod
     def _get_github_client():
@@ -344,12 +340,11 @@ class GithubSync:
             return False
 
     @staticmethod
-    def add_rag_files(uploaded_files: List, rag_folder: str = "tea_data/RAG", backup_folder: str = "tea_data/tea_backup") -> Tuple[bool, List[str]]:
+    def add_rag_files(uploaded_files: List, rag_folder: str = "tea_data/RAG") -> Tuple[bool, List[str]]:
         """
-        添加RAG文件到GitHub（同时上传到主文件夹和备份文件夹）
+        添加RAG文件到GitHub（只添加，不删除现有文件）
         - uploaded_files: Streamlit上传的文件对象列表
         - rag_folder: GitHub上的RAG文件夹路径
-        - backup_folder: GitHub上的备份文件夹路径
         返回: (是否成功, 成功上传的文件名列表)
         """
         g, repo_name, branch = GithubSync._get_github_client()
@@ -361,15 +356,10 @@ class GithubSync:
         try:
             uploaded_names = []
             for uf in uploaded_files:
+                file_path = f"{rag_folder}/{uf.name}"
                 uf.seek(0)
                 file_content = uf.read()
-                
-                # 上传到主文件夹
-                main_path = f"{rag_folder}/{uf.name}"
-                if GithubSync.push_binary_file(main_path, file_content, f"Add RAG file: {uf.name}"):
-                    # 同时备份到tea_backup文件夹
-                    backup_path = f"{backup_folder}/{uf.name}"
-                    GithubSync.push_binary_file(backup_path, file_content, f"Backup RAG file: {uf.name}")
+                if GithubSync.push_binary_file(file_path, file_content, f"Add RAG file: {uf.name}"):
                     uploaded_names.append(uf.name)
                 else:
                     st.warning(f"⚠️ 上传 {uf.name} 失败")
@@ -407,7 +397,7 @@ class GithubSync:
     @staticmethod
     def delete_rag_file(filename: str, rag_folder: str = "tea_data/RAG") -> bool:
         """
-        从GitHub删除单个RAG文件（仅从主文件夹删除，不删除备份）
+        从GitHub删除单个RAG文件
         - filename: 要删除的文件名
         - rag_folder: GitHub上的RAG文件夹路径
         返回: 是否成功
@@ -713,7 +703,7 @@ def graphrag_static_kb_context(query_vec: np.ndarray,
         return ctx, hits
 
 def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, embedder: AliyunEmbedder, client: OpenAI, model_id: str, k_num: int, c_num: int):
-    """执行 RAG 检索与 LLM 评分，并返回实际使用的 prompts"""
+    """执行 RAG 检索与 LLM 评分"""
     vec = embedder.encode([text]) 
     
     # --- KB (External GraphRAG over static KB) ---
@@ -750,12 +740,10 @@ def run_scoring(text: str, kb_res: Tuple, case_res: Tuple, prompt_cfg: Dict, emb
             response_format={"type": "json_object"},
             temperature=0.3
         )
-        result = json.loads(resp.choices[0].message.content)
-        # 返回结果、检索到的内容、以及实际使用的prompts
-        return result, hits, found_cases, {"system": sys_p, "user": user_p}
+        return json.loads(resp.choices[0].message.content), hits, found_cases
     except Exception as e:
         st.error(f"Inference Error: {e}")
-        return None, [], [], {"system": sys_p, "user": user_p}
+        return None, [], []
 
 # ==========================================
 # [SECTION 3] 辅助与可视化
@@ -837,7 +825,7 @@ def parse_file_bytes(filename: str, content: bytes) -> str:
                     print(f"[ERROR]    → 这通常意味着 PDF 文件下载不完整或损坏")
                     print(f"[ERROR]    → 文件大小: {len(content):,} bytes")
                     print(f"[ERROR]    → 文件头: {content[:20]}")
-                    print(f"[ERROR]    → 文件尾: {content[-50 else content}")
+                    print(f"[ERROR]    → 文件尾: {content[-50:] if len(content) > 50 else content}")
                 
                 import traceback
                 traceback.print_exc()
@@ -1038,7 +1026,7 @@ def load_rag_from_github(aliyun_key: str) -> Tuple[bool, str]:
         print(f"[INFO]   ✓ 获得向量: {vecs.shape}")
         
         kb_idx.add(vecs)
-        print(f"[INFO✓ FAISS 索引构建完成 (共 {kb_idx.ntotal} 条)")
+        print(f"[INFO]   ✓ FAISS 索引构建完成 (共 {kb_idx.ntotal} 条)")
         
         # 5. 保存到 session_state 和磁盘
         st.session_state.kb = (kb_idx, chunks)
@@ -1152,7 +1140,8 @@ def edit_case_dialog(case_idx: int, embedder: AliyunEmbedder):
     factors = ["优雅性", "辨识度", "协调性", "饱和度", "持久性", "苦涩度"]
     
     st.subheader(f"编辑判例 #{case_idx + 1}")
-     编辑文本
+    
+    # 编辑文本
     new_text = st.text_area("判例描述", case.get("text", ""), height=100)
     new_master = st.text_area("总评", case.get("master_comment", ""), height=60)
     new_tags = st.text_input("标签", case.get("tags", ""))
@@ -1232,7 +1221,7 @@ if 'loaded' not in st.session_state:
     print(f"[INFO]   → RAG 文件: {st.session_state.kb_files}")
     
     # 2. 标记是否需要从 GitHub 加载 RAG（延迟加载）
-    print("[INFO] 步骤 2/3: 检态...")
+    print("[INFO] 步骤 2/3: 检查 RAG 状态...")
     if len(kb_data) == 0:
         st.session_state.rag_loading_needed = True
         st.session_state.rag_loading_status = "pending"
@@ -1313,7 +1302,7 @@ with st.sidebar:
         loading_status = st.session_state.get('rag_loading_status', 'pending')
         
         if loading_status == 'pending':
-            #态
+            # 显示加载状态
             with st.status("🔄 正在从 GitHub 加载知识库...", expanded=True) as status:
                 st.write("📥 下载 RAG 文件...")
                 st.session_state.rag_loading_status = 'loading'
@@ -1412,7 +1401,6 @@ with tab1:
     if 'last_scores' not in st.session_state: 
         st.session_state.last_scores = None
         st.session_state.last_master_comment = ""
-        st.session_state.last_prompts = None  # 新增：保存最后一次的prompts
     
     # 用于生成动态key，确保每次新评分时校准输入框显示新内容
     if 'score_version' not in st.session_state:
@@ -1423,12 +1411,10 @@ with tab1:
         else:
             with st.spinner(f"正在使用 {model_id} 品鉴..."):
                 user_input = llm_normalize_user_input(user_input, client_d)
-                # 注意：run_scoring 现在返回4个值
-                scores, kb_h, case_h, prompts = run_scoring(user_input, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen3-14B", r_num, c_num)
+                scores, kb_h, case_h = run_scoring(user_input, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen3-14B", r_num, c_num)
                 if scores:
                     st.session_state.last_scores = scores
                     st.session_state.last_master_comment = scores.get("master_comment", "")
-                    st.session_state.last_prompts = prompts  # 保存prompts
                     
                     # 递增版本号，使校准输入框使用新的key，从而显示新的默认值
                     st.session_state.score_version += 1
@@ -1451,17 +1437,6 @@ with tab1:
                     d = s[f]
                     with cols[i%2]:
                         st.markdown(f"""<div class="factor-card"><div class="score-header"><span>{f}</span><span>{d['score']}/9</span></div><div>{d['comment']}</div><div class="advice-tag">💡 {d.get('suggestion','')}</div></div>""", unsafe_allow_html=True)
-        
-        # === 新增：展Prompts ===
-        if st.session_state.last_prompts:
-            with st.expander("🔍 查看发送给 LLM 的完整 Prompts"):
-                st.markdown("**System Prompt:**")
-                st.markdown(f'<div class="prompt-box">{st.session_state.last_prompts["system"]}</div>', unsafe_allow_html=True)
-                
-                st.markdown("---")
-                
-                st.markdown("**User Prompt:**")
-                st.markdown(f'<div class="prompt-box">{st.session_state.last_prompts["user"]}</div>', unsafe_allow_html=True)
         
         st.subheader("🛠️ 评分校准与修正")
         v = st.session_state.score_version  # 获取当前版本号
@@ -1506,8 +1481,7 @@ with tab2:
         res, bar = [], st.progress(0)
         for i, l in enumerate(lines):
             l = llm_normalize_user_input(l, client_d)
-            # 批量评分不需要保存prompts，所以只取前3个返回值
-            s, _, _, _ = run_scoring(l, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen3-14B", r_n, c_n)
+            s, _, _ = run_scoring(l, st.session_state.kb, st.session_state.cases, st.session_state.prompt_config, embedder, client, "Qwen3-14B", r_n, c_n)
             res.append({"id":i+1, "text":l, "scores":s})
             bar.progress((i+1)/len(lines))
         st.success("完成")
@@ -1516,147 +1490,159 @@ with tab2:
 # --- Tab 3: RAG ---
 with tab3:
     st.subheader("📚 知识库 (RAG)")
-    st.caption("上传PDF/文档以增强模型回答的准确性。文件将同步到云端并自动备份。")
-    
-    # ===== 修改：使用单列布局 =====
-    st.markdown("**📁 云端上的RAG文件：**")
-    
-    # 获取GitHub上的文件列表
-    if 'github_rag_files' not in st.session_state:
-        st.session_state.github_rag_files = []
-    
-    col_refresh, col_spacer = st.columns([1, 3])
-    with col_refresh:
-        if st.button("🔄 刷新列表", key="refresh_rag_list"):
-            with st.spinner("正在获取文件列表..."):
-                st.session_state.github_rag_files = GithubSync.list_rag_files()
-            st.rerun()
-    
-    github_files = st.session_state.github_rag_files
-    if not github_files:
-        # 首次加载时尝试获取
-        github_files = GithubSync.list_rag_files()
-        st.session_state.github_rag_files = github_files
-    
-    if github_files:
-        st.info(f"共 {len(github_files)} 个文件")
+    st.caption("上传PDF/文档以增强模型回答的准确性。文件将同步到云端。")
+    colu1, colu2 = st.columns([7,3])
+    with colu1:
+        # ===== 显示GitHub上的RAG文件列表 =====
+        st.markdown("**📁 云端上的RAG文件：**")
         
-        # 用于追踪需要删除的文件
-        if 'rag_files_to_delete' not in st.session_state:
-            st.session_state.rag_files_to_delete = set()
+        # 获取GitHub上的文件列表
+        if 'github_rag_files' not in st.session_state:
+            st.session_state.github_rag_files = []
         
-        # 显示文件列表，每个文件带删除按钮
-        for fname in github_files:
-            file_col, del_col = st.columns([5, 1])
-            with file_col:
-                if fname in st.session_state.rag_files_to_delete:
-                    st.markdown(f"~~📄 {fname}~~ *(待删除)*")
-                else:
-                    st.markdown(f"📄 {fname}")
-            with del_col:
-                if fname not in st.session_state.rag_files_to_delete:
-                    if st.button("🗑️", key=f"del_rag_{fname}", help=f"删除 {fname}"):
-                        st.session_state.rag_files_to_delete.add(fname)
-                        st.rerun()
-                else:
-                    if st.button("↩️", key=f"undo_rag_{fname}", help="撤销删除"):
-                        st.session_state.rag_files_to_delete.discard(fname)
-                        st.rerun()
+        col_refresh, col_spacer = st.columns([1, 3])
+        with col_refresh:
+            if st.button("🔄 刷新列表", key="refresh_rag_list"):
+                with st.spinner("正在获取文件列表..."):
+                    st.session_state.github_rag_files = GithubSync.list_rag_files()
+                st.rerun()
         
-        # 如果有待删除的文件，显示确认按钮
-        if st.session_state.rag_files_to_delete:
-            st.warning(f"⚠️ 将删除 {len(st.session_state.rag_files_to_delete)} 个文件")
-            del_col1, del_col2 = st.columns(2)
-            with del_col1:
-                if st.button("✅ 确认删除并重建知识库", type="primary", key="confirm_del_rag"):
-                    with st.spinner("正在删除文件..."):
-                        deleted = []
-                        for fname in st.session_state.rag_files_to_delete:
-                            if GithubSync.delete_rag_file(fname):
-                                deleted.append(fname)
-                        
-                        # 更新session state
-                        st.session_state.github_rag_files = [f for f in github_files if f not in deleted]
-                        
-                        # 更新本地知识库文件列表
-                        current_kb_files = st.session_state.get('kb_files', [])
-                        st.session_state.kb_files = [f for f in current_kb_files if f not in deleted]
-                        ResourceManager.save_kb_files(st.session_state.kb_files)
-                        
-                        st.session_state.rag_files_to_delete = set()
-                        st.success(f"✅ 已删除 {len(deleted)} 个文件")
-                    
-                    # 自动重建知识库
-                    with st.spinner("🔄 正在从云端重建知识库..."):
-                        success, msg = load_rag_from_github(aliyun_key)
-                        if success:
-                            st.success(msg)
-                            # 更新GitHub文件列表
-                            st.session_state.github_rag_files = GithubSync.list_rag_files()
-                        else:
-                            st.error(msg)
-                    time.sleep(1)
-                    st.rerun()
-            with del_col2:
-                if st.button("❌ 取消", key="cancel_del_rag"):
-                    st.session_state.rag_files_to_delete = set()
-                    st.rerun()
-    else:
-        st.caption("暂无RAG文件")
-    
-    st.markdown("---")
-    
-    # ===== 上传新文件（添加模式） =====
-    st.markdown("**➕ 添加新文件：**")
-    up = st.file_uploader("选择文件（支持 .pdf, .txt, .docx）", accept_multiple_files=True, key="kb_uploader", 
-                        type=['pdf', 'txt', 'docx'])
-    
-    if up and st.button("📤 添加到知识库并重建", type="primary"):
-        # 检查是否有重名文件
-        new_names = [u.name for u in up]
-        existing_names = st.session_state.get('github_rag_files', [])
-        duplicate_names = set(new_names) & set(existing_names)
+        github_files = st.session_state.github_rag_files
+        if not github_files:
+            # 首次加载时尝试获取
+            github_files = GithubSync.list_rag_files()
+            st.session_state.github_rag_files = github_files
         
-        if duplicate_names:
-            st.warning(f"⚠️ 以下文件已存在，将被覆盖：{', '.join(duplicate_names)}")
-        
-        with st.spinner("正在处理文件..."):
-            # 1. 解析文件内容（用于验证）
-            raw = "".join([parse_file(u) for u in up])
+        if github_files:
+            st.info(f"共 {len(github_files)} 个文件")
             
-            if not raw.strip():
-                st.error("❌ 无法从上传的文件中提取有效文本")
-            else:
-                # 2. 上传到GitHub（包含备份）
-                with st.spinner("上传到GitHub（含备份）..."):
-                    success, uploaded_names = GithubSync.add_rag_files(up, "tea_data/RAG", "tea_data/tea_backup")
+            # 用于追踪需要删除的文件
+            if 'rag_files_to_delete' not in st.session_state:
+                st.session_state.rag_files_to_delete = set()
+            
+            # 显示文件列表，每个文件带删除按钮
+            for fname in github_files:
+                file_col, del_col = st.columns([5, 1])
+                with file_col:
+                    if fname in st.session_state.rag_files_to_delete:
+                        st.markdown(f"~~📄 {fname}~~ *(待删除)*")
+                    else:
+                        st.markdown(f"📄 {fname}")
+                with del_col:
+                    if fname not in st.session_state.rag_files_to_delete:
+                        if st.button("🗑️", key=f"del_rag_{fname}", help=f"删除 {fname}"):
+                            st.session_state.rag_files_to_delete.add(fname)
+                            st.rerun()
+                    else:
+                        if st.button("↩️", key=f"undo_rag_{fname}", help="撤销删除"):
+                            st.session_state.rag_files_to_delete.discard(fname)
+                            st.rerun()
+            
+            # 如果有待删除的文件，显示确认按钮
+            if st.session_state.rag_files_to_delete:
+                st.warning(f"⚠️ 将删除 {len(st.session_state.rag_files_to_delete)} 个文件")
+                del_col1, del_col2 = st.columns(2)
+                with del_col1:
+                    if st.button("✅ 确认删除", type="primary", key="confirm_del_rag"):
+                        with st.spinner("正在删除文件..."):
+                            deleted = []
+                            for fname in st.session_state.rag_files_to_delete:
+                                if GithubSync.delete_rag_file(fname):
+                                    deleted.append(fname)
+                            
+                            # 更新session state
+                            st.session_state.github_rag_files = [f for f in github_files if f not in deleted]
+                            
+                            # 更新本地知识库文件列表
+                            current_kb_files = st.session_state.get('kb_files', [])
+                            st.session_state.kb_files = [f for f in current_kb_files if f not in deleted]
+                            ResourceManager.save_kb_files(st.session_state.kb_files)
+                            
+                            st.session_state.rag_files_to_delete = set()
+                            st.success(f"✅ 已删除 {len(deleted)} 个文件")
+                            
+                            # 提示需要重建知识库
+                            st.info("💡 文件已从云端删除。如需更新本地知识库，请点击下方的'重建本地知识库'按钮。")
+                            time.sleep(1)
+                            st.rerun()
+                with del_col2:
+                    if st.button("❌ 取消", key="cancel_del_rag"):
+                        st.session_state.rag_files_to_delete = set()
+                        st.rerun()
+        else:
+            st.caption("暂无RAG文件")
+        
+        st.markdown("---")
+        
+        # ===== 上传新文件（添加模式） =====
+        st.markdown("**➕ 添加新文件：**")
+        up = st.file_uploader("选择文件", accept_multiple_files=True, key="kb_uploader", 
+                            type=['pdf', 'txt', 'docx'])
+        
+        if up and st.button("📤 添加到知识库", type="primary"):
+            # 检查是否有重名文件
+            new_names = [u.name for u in up]
+            existing_names = st.session_state.get('github_rag_files', [])
+            duplicate_names = set(new_names) & set(existing_names)
+            
+            if duplicate_names:
+                st.warning(f"⚠️ 以下文件已存在，将被覆盖：{', '.join(duplicate_names)}")
+            
+            with st.spinner("正在处理文件..."):
+                # 1. 解析文件内容
+                raw = "".join([parse_file(u) for u in up])
                 
-                if success:
-                    # 3. 更新本地文件列表
-                    current_kb_files = st.session_state.get('kb_files', [])
-                    # 合并文件列表（去重）
-                    all_files = list(set(current_kb_files + uploaded_names))
-                    st.session_state.kb_files = all_files
-                    st.session_state.github_rag_files = list(set(existing_names + uploaded_names))
-                    ResourceManager.save_kb_files(all_files)
-                    
-                    st.success(f"✅ 已上传 {len(uploaded_names)} 个文件到GitHub（含备份）")
-                    
-                    # 4. 自动重建知识库
-                    with st.spinner("🔄 正在从云端重建知识库..."):
-                        rebuild_success, rebuild_msg = load_rag_from_github(aliyun_key)
-                        if rebuild_success:
-                            st.success(rebuild_msg)
-                            # 更新GitHub文件列表
-                            st.session_state.github_rag_files = GithubSync.list_rag_files()
-                        else:
-                            st.error(rebuild_msg)
-                    
-                    time.sleep(1)
-                    st.rerun()
+                if not raw.strip():
+                    st.error("❌ 无法从上传的文件中提取有效文本")
                 else:
-                    st.error("❌ 上传到GitHub失败")
+                    # 2. 上传到GitHub
+                    with st.spinner("上传到GitHub..."):
+                        success, uploaded_names = GithubSync.add_rag_files(up, "tea_data/RAG")
+                    
+                    if success:
+                        # 3. 更新本地文件列表
+                        current_kb_files = st.session_state.get('kb_files', [])
+                        # 合并文件列表（去重）
+                        all_files = list(set(current_kb_files + uploaded_names))
+                        st.session_state.kb_files = all_files
+                        st.session_state.github_rag_files = list(set(existing_names + uploaded_names))
+                        ResourceManager.save_kb_files(all_files)
+                        
+                        st.success(f"✅ 已上传 {len(uploaded_names)} 个文件到GitHub")
+                        st.info("💡 请点击下方的'重建本地知识库'按钮以更新向量索引。")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ 上传到GitHub失败")
+    
+    # ===== 重建本地知识库按钮 =====
+    with colu2:
+        st.markdown("**🔧 知识库维护：**")
+        local_kb_count = len(st.session_state.kb[1])
+        st.caption(f"网页端知识库：{local_kb_count} 个片段")
+        
+        # 每个文件换行显示
+        if kb_files:
+            st.markdown("**网页端知识库文件:**")
+            for fname in kb_files:
+                st.markdown(f"- 📄 {fname}")
+        else:
+            st.markdown("**网页端知识库文件:** 无") 
+        st.markdown("---")
+        st.markdown("云端数据与网页数据不统一？")
+        if st.button("🔄 从云端加载知识库", use_container_width=True, type="primary"):
+            with st.spinner("正在从云端拉取并重建知识库..."):
+                success, msg = load_rag_from_github(aliyun_key)
+                if success:
+                    st.success(msg)
+                    # 更新GitHub文件列表
+                    st.session_state.github_rag_files = GithubSync.list_rag_files()
+                else:
+                    st.error(msg)
+            time.sleep(1)
+            st.rerun()
 
+    
     
 with tab4:
     MANAGER_URL = "http://117.50.138.123:8001"
@@ -1774,7 +1760,7 @@ with tab4:
                                 
                             if r.status_code == 200:
                                 st.balloons()
-                                st.success(f"✅ 任务已提')}")
+                                st.success(f"✅ 任务已提交！服务器响应: {r.json().get('message')}")
                                 st.info("💡 你可以稍后刷新页面查看状态，训练完成后服务会自动恢复。")
                             else:
                                 st.error(f"❌ 提交失败: {r.text}")
@@ -1807,3 +1793,12 @@ with tab5:
                 st.session_state.prompt_config = new_cfg
                 with open(PATHS.prompt_config_file, 'w', encoding='utf-8') as f:
                     json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+
+
+
+
+
+
+
+
+
